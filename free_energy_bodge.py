@@ -37,7 +37,47 @@ def approx_absolute_trace(matr, N):
         reconstruct_even_matrix(matr, coefs)
     ) / 2
 
+def generate_random_orthogonal_vectors(n, num_vectors):
+    M = np.random.randn(n, num_vectors)
+    Q, _ = np.linalg.qr(M)
+    return Q[:, :num_vectors]
 
+def stochastic_trace_estimation(matr, num_vectors):
+    # Is then of shape (matr.shape[0], num_vectors)
+    ortho = generate_random_orthogonal_vectors(matr.shape[0], num_vectors)
+    return np.einsum("ij, jk, ki", ortho.T, matr, ortho) / num_vectors
+
+
+def stoch_testing():
+
+    lattice = CubicLattice((20, 20, 1))
+    system = Hamiltonian(lattice)
+
+    t = 1
+    μ = -3 * t
+    m = 0.05 * t
+    Δs = 0.10 * t
+
+    with system as (H, Δ):
+        for i in lattice.sites():
+            H[i, i] = -μ * σ0 -m * σ3
+            Δ[i, i] = -Δs * jσ2
+        for i, j in lattice.bonds():
+            H[i, j] = -t * σ0
+
+
+    matr = system.matrix()
+    matr = matr / np.linalg.norm(matr)
+
+    true_val = np.trace(matr)
+
+    Nvals = np.arange(10) + 1
+    tests = np.array([
+        rel_diff(stochastic_trace_estimation(matr, n), true_val) for n in tqdm(Nvals)
+    ])
+    print(tests)
+    plt.plot(Nvals, np.log10(tests))
+    plt.show()
 
 def testing():
     lattice = CubicLattice((10, 10, 1))
@@ -86,4 +126,4 @@ def testing():
     # print(matr)
 
 if __name__ == '__main__':
-    testing()
+    stoch_testing()

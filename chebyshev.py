@@ -3,10 +3,12 @@ import matplotlib.pyplot as plt
 from scipy.fft import dct
 
 
-def gen_func(beta, eps):
+def gen_func(beta):
     def func(x):
-        return 1 + np.exp(-beta * np.sqrt(x**2 + eps**2))
+        return np.log(2 * np.cosh(beta * x / 2))
     return func
+
+
 
 # def gen_func(beta, eps):
 #     def func(x):
@@ -31,9 +33,11 @@ def cheby_from_dct(f, N):
     cvec = c_fourier / N
     cvec[0] /= 2
     cvec[N] /= 2
-    cvec[1::2] = 0
 
-    return cvec[np.nonzero(cvec)]
+    # # cvec[1::2] = 0
+    # return cvec[::2] # Keep only even nodes
+    cvec[1::2] = 0
+    return cvec[np.nonzero(cvec)] # Keep only even nodes
 
 def reconstruct_even(x, coeffs):
     # Reconstructs the chebyshev coefficients under the assumption
@@ -54,19 +58,18 @@ def rel_diff(a, b, eps=1e-10):
 
 
 def chebyshev_accuracy_plot():
-    betas = np.linspace(1e-10, 10, 100)
-    eps = 1e-4
+    betas = np.linspace(1e-10, 1000, 100)
     threshold = 1e-4
 
-    x = np.linspace(0, 1, 200)
+    x = np.linspace(-1, 1, 101)
     res = []
 
     for beta in betas:
-        fvals = gen_func(beta, 0)(x)
-        func = gen_func(beta, eps)
+        func = gen_func(beta)
+        fvals = func(x)
         low = 2
         high = 1000
-        while high - low > 1:
+        while high > low + 1:
             N = (high + low) // 2
             c = cheby_from_dct(func, N)
 
@@ -78,7 +81,7 @@ def chebyshev_accuracy_plot():
                 low = N
 
             print(low, high, cur)
-        res.append(high)
+        res.append(N)
 
     plt.plot(betas, res)
     plt.show()
@@ -88,21 +91,26 @@ def main():
 
 
 
-# def main():
+def func(x):
+    return np.log(2*np.cosh(x/2))
 
-#     x = np.linspace(-1, 1, 100)
+def main():
 
-#     N = 200
-#     c = cheby_from_dct(func, N)
+    x = np.linspace(-1e-4, 1e-4, 100)
 
-#     y_approx = reconstruct_even(x, c)
-#     print(c)
+    N = 200
+    c = cheby_from_dct(func, N)
 
-#     plt.plot(x,np.log10( rel_diff(func(x, eps=0), y_approx)), label='relative diff')
-#     plt.figure()
-#     plt.plot(x, func(x, eps=0))
-#     plt.plot(x, y_approx)
-#     plt.legend()
+    y_approx = reconstruct_even(x, c)
+    print(c)
+
+    plt.plot(x,np.log10( rel_diff(func(x), y_approx)), label='relative diff')
+    plt.figure()
+    plt.plot(x, func(x), label="Exact")
+    plt.plot(x, y_approx, label="Approxyt")
+
+    # plt.xlim([-1e-4, 1e-4])
+    plt.legend()
     plt.show()
 if __name__ == '__main__':
     main()
