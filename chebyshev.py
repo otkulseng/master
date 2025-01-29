@@ -20,7 +20,7 @@ def gen_func(beta):
 #         return  np.sqrt(x**2 + eps**2)
 #     return func
 
-def cheby_from_dct(f, N):
+def cheby_from_dct(f, N, even=True):
 
     j = np.arange(N + 1)
     x = np.cos(np.pi * j / N)
@@ -36,7 +36,8 @@ def cheby_from_dct(f, N):
 
     # # cvec[1::2] = 0
     # return cvec[::2] # Keep only even nodes
-    cvec[1::2] = 0
+    if even:
+        cvec[1::2] = 0
     return cvec[np.nonzero(cvec)] # Keep only even nodes
 
 def reconstruct_even(x, coeffs):
@@ -94,9 +95,12 @@ def main():
 def func(x):
     return np.log(2*np.cosh(x/2))
 
+
+
+
 def main():
 
-    x = np.linspace(-1e-4, 1e-4, 100)
+    x = np.linspace(-1, 1, 100)
 
     N = 200
     c = cheby_from_dct(func, N)
