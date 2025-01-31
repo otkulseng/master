@@ -38,7 +38,7 @@ def cheby_from_dct(f, N, even=True):
     # return cvec[::2] # Keep only even nodes
     if even:
         cvec[1::2] = 0
-    return cvec[np.nonzero(cvec)] # Keep only even nodes
+    return cvec[::2] # Keep only even nodes
 
 def reconstruct_even(x, coeffs):
     # Reconstructs the chebyshev coefficients under the assumption
@@ -96,25 +96,58 @@ def func(x):
     return np.log(2*np.cosh(x/2))
 
 
+def gen_func(temperature):
+    def free_energy_func(x):
+        abs_term = np.abs(x) / 2
+        if temperature > 0:
+            abs_term += temperature * np.log(1 + np.exp(- np.abs(x) / temperature))
+        return abs_term
+    return free_energy_func
 
+
+def jackson(N):
+    k = np.arange(N + 1)
+    first = (N - k + 1) * np.cos(np.pi * k / (N + 1))
+    second = np.sin(np.pi * k / (N + 1)) / np.tan(np.pi / (N + 1))
+
+    return ((
+        first + second
+    ) / (N + 1))[::2]
 
 def main():
-
+    N = 100
     x = np.linspace(-1, 1, 100)
-
-    N = 200
-    c = cheby_from_dct(func, N)
-
+    f = gen_func(0.01)
+    c = cheby_from_dct(f, N )
+    g = jackson(N)
     y_approx = reconstruct_even(x, c)
-    print(c)
+    y_jack = reconstruct_even(x, c * g)
 
-    plt.plot(x,np.log10( rel_diff(func(x), y_approx)), label='relative diff')
-    plt.figure()
-    plt.plot(x, func(x), label="Exact")
-    plt.plot(x, y_approx, label="Approxyt")
+    plt.plot(x, y_approx - f(x), label="wo")
+    plt.plot(x, y_jack - f(x), label="kernel")
 
-    # plt.xlim([-1e-4, 1e-4])
     plt.legend()
     plt.show()
+
+
+
+
+# def main():
+
+#     x = np.linspace(-1, 1, 100)
+
+#     N = 200
+#     c = cheby_from_dct(func, N)
+
+#     print(c)
+
+#     plt.plot(x,np.log10( rel_diff(func(x), y_approx)), label='relative diff')
+#     plt.figure()
+#     plt.plot(x, func(x), label="Exact")
+#     plt.plot(x, y_approx, label="Approxyt")
+
+#     # plt.xlim([-1e-4, 1e-4])
+#     plt.legend()
+#     plt.show()
 if __name__ == '__main__':
     main()

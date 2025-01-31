@@ -1,7 +1,7 @@
 import numpy as np
 from chebyshev import cheby_from_dct, rel_diff
 from scipy.sparse import csr_matrix
-from bodge import *
+from newbodge import *
 import matplotlib.pyplot as plt
 
 def approximate_largest_eigenvalue(matr: csr_matrix, rel_tol=1e-6, max_iter=1000):
