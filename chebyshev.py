@@ -10,16 +10,6 @@ def gen_func(beta):
 
 
 
-# def gen_func(beta, eps):
-#     def func(x):
-#         return 1 + np.exp(-beta * x)
-#     return func
-
-# def gen_funcg(beta, eps):
-#     def func(x):
-#         return  np.sqrt(x**2 + eps**2)
-#     return func
-
 def cheby_from_dct(f, N, even=True):
 
     j = np.arange(N + 1)
@@ -115,8 +105,8 @@ def jackson(N):
     ) / (N + 1))[::2]
 
 def main():
-    N = 100
-    x = np.linspace(-1, 1, 100)
+    N = 500
+    x = np.linspace(-1, 1, 200)
     f = gen_func(0.01)
     c = cheby_from_dct(f, N )
     g = jackson(N)
@@ -127,7 +117,7 @@ def main():
     plt.plot(x, y_jack - f(x), label="kernel")
 
     plt.legend()
-    plt.show()
+    plt.savefig("main.png")
 
 
 
