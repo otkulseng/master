@@ -45,13 +45,21 @@ def apply_order_parameters(indices: torch.Tensor, order_parameters: torch.Tensor
     # order parameters must be order_parameters = torch.concat([deltas, -deltas.conj()])
 
     # Instead of matrix multiplication, just permute the rows
+
     row = indices[:, 0]
     col = indices[:, 1]
+
+    blk = torch.tensor(
+        [[0, 1],
+         [-1, 0]], dtype=torch.complex128
+    ).unsqueeze(0).unsqueeze(0) # (1, 2, 2)
+
     res = torch.zeros_like(V)
-    res[:, row, :] = order_parameters.unsqueeze(-1).unsqueeze(0) * torch.stack([V[:, col, 1], -V[:, col, 0]], dim=-1)
+
+    V = torch.matmul(blk, V[:, col, :].unsqueeze(-1)).squeeze(-1)
+
+    res[:, row, :] = V * order_parameters.unsqueeze(0).unsqueeze(-1)
     return res
-
-
 
 def main():
     indices = torch.tensor([
