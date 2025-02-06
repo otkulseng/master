@@ -13,7 +13,7 @@ def bdg_base_matrix(indices: torch.Tensor, blocks: torch.Tensor):
         indices = torch.tensor(indices, dtype=torch.long)
 
     if not torch.is_tensor(blocks):
-        blocks = torch.tensor(blocks, dtype=torch.float32)
+        blocks = torch.tensor(blocks, dtype=torch.complex128)
     row = indices[:, 0]
     col = indices[:, 1]
     blk = indices[:, 2]
@@ -57,8 +57,8 @@ def apply_order_parameters(indices: torch.Tensor, order_parameters: torch.Tensor
     res = torch.zeros_like(V)
 
     blk = torch.tensor(
-        [[0, 1],
-         [-1, 0]], dtype=torch.float32
+        [[0, -1],
+         [1, 0]], dtype=torch.complex128
     ) # (2, 2)
 
     # (num_batch, nnz, 2) * (1, nnz, 1)

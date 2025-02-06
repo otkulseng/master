@@ -3,115 +3,10 @@ from scipy.sparse import dok_matrix
 from tqdm import tqdm
 from bdg import *
 from chebyshev import cheby_from_dct
+from bodge import CubicLattice
 
-class Lattice:
-    def __init__(self, shape: tuple, period: dict[int, int] = {}):
-        self.shape = shape
-        assert(len(self.shape) == 3)
-        assert(len(self.shape) <= 3)
-        assert(type(shape) is tuple)
+from stochastic_trace_estimation import clenshaw_chebyshev_stochastic_estimation
 
-        self.period = period
-        for dim, p in period.items():
-            if dim < 0 or dim >= 3:
-                raise RuntimeError("Dimension {dim} of period not in interval [0, 3)")
-
-            if shape[dim] < p:
-                raise RuntimeError("Period cannot be smaller than shape")
-
-    def kmodes(self):
-        kmodes =  [
-            np.array([0]), np.array([0]), np.array([0])
-        ]
-
-        for dim, period in self.period.items():
-            kmodes[dim] = period * 2 * np.pi * np.fft.fftfreq(self.shape[dim])
-        return kmodes
-
-    def effective_shape(self):
-        shape = list(self.shape)
-        for dim, period in self.period.items():
-            shape[dim] = period
-        return tuple(shape)
-
-    def number_of_sites(self) -> int:
-        return np.prod(self.effective_shape())
-
-    def index(self, idx) -> int:
-        Lx, Ly, _ = self.shape
-        i, j, k = idx
-
-        return i + j * Lx + k * Lx * Ly
-
-    def sites(self):
-        Lx, Ly, Lz = self.effective_shape()
-        for x in range(Lx):
-            for y in range(Ly):
-                for z in range(Lz):
-                    yield (x, y, z)
-
-    def bonds(self):
-        # First iterate over all conventional bonds
-        Lx, Ly, Lz = self.effective_shape()
-        for x in range(Lx):
-            for y in range(Ly):
-                for z in range(Lz):
-                    if x > 0:
-                        yield (x-1, y, z), (x, y, z)
-                        yield (x, y, z), (x-1, y, z)
-
-                    if y > 0:
-                        yield (x, y-1, z), (x, y, z)
-                        yield (x, y, z), (x, y-1, z)
-
-                    if z > 0:
-                        yield (x, y, z-1), (x, y, z)
-                        yield (x, y, z), (x, y, z-1)
-
-
-
-    def edges(self, axes: list[int] = []):
-        # All conventional edges
-        Lx, Ly, Lz = self.effective_shape()
-        for ax in axes:
-            if ax in self.period:
-                continue
-
-            match ax:
-                case 0:
-                    for y in range(Ly):
-                        for z in range(Lz):
-                            yield (0, y, z), (Lx-1, y, z)
-                            yield (Lx-1, y, z), (0, y, z)
-                case 1:
-                    for x in range(Lx):
-                        for z in range(Lz):
-                            yield (x, 0, z), (x, Ly-1, z)
-                            yield (x, Ly-1, z), (x, 0, z)
-                case 2:
-                    for x in range(Lx):
-                        for y in range(Ly):
-                            yield (x, y, 0), (x, y, Lz-1)
-                            yield (x, y, Lz-1), (x, y, 0)
-
-
-        for dim in self.period:
-            match dim:
-                case 0:
-                    for y in range(Ly):
-                        for z in range(Lz):
-                            yield (Lx, y, z), (Lx-1, y, z)
-                            yield (Lx-1, y, z), (Lx, y, z)
-                case 1:
-                    for x in range(Lx):
-                        for z in range(Lz):
-                            yield (x, Ly, z), (x, Ly-1, z)
-                            yield (x, Ly-1, z), (x, Ly, z)
-                case 2:
-                    for x in range(Lx):
-                        for y in range(Ly):
-                            yield (x, y, Lz), (x, y, Lz-1)
-                            yield (x, y, Lz-1), (x, y, Lz)
 
 class BlockReuseMatrix:
     def __init__(self):
@@ -136,10 +31,9 @@ class BlockReuseMatrix:
         yield from self.data.items()
 
 class PotentialHamiltonian:
-    def __init__(self, lat: Lattice):
+    def __init__(self, lat: CubicLattice):
 
         self.lattice = lat
-        N = self.lattice.number_of_sites()
         self.potential = {}
         self.matrix = {}
         self.block_lookup = {}
@@ -188,7 +82,7 @@ class PotentialHamiltonian:
 
         _, val = next(iter(self.inverse_block_lookup.items()))
         shape = tuple([len(self.inverse_block_lookup)] + list(val.shape))
-        blocks = np.zeros(shape, dtype=np.float32)
+        blocks = np.zeros(shape, dtype=np.complex128)
 
 
         for block_index, block in self.inverse_block_lookup.items():
@@ -207,7 +101,7 @@ class PotentialHamiltonian:
             indices[idx, 1] = j
             values[idx] = self.potential[key]
 
-        return indices, values
+        return bdg_order_matrix_indices(indices), values
 
     def solve(self, temperature: float = 0):
         # Free energy minimization using chebyshev expansion and stochastic
@@ -220,90 +114,58 @@ class PotentialHamiltonian:
 
 
         # Start out with all parameters equal to 1
-        order_parameters = torch.zeros(indices[:, 0].size(), requires_grad=True, dtype=torch.float32)
+        order_parameters = torch.ones(potential.size(), requires_grad=True, dtype=torch.float32)
         # Currently, row and col is equal for s-wave
-        indices = bdg_order_matrix_indices(indices)
 
 
-        norm = base_matrix.norm()
 
-
+        norm = base_matrix.norm() + 1
 
         base_matrix = base_matrix / norm
 
 
         def free_energy_func(x):
-            abs_term = norm * np.abs(x) / 2
+            abs_term = norm * np.abs(x) / 4
             if temperature > 0:
                 abs_term += temperature * np.log(1 + np.exp(- norm / temperature * np.abs(x)))
-            return -abs_term / 2
+            return -abs_term
             # Above equivalent to T ln(2cosh(norm x / 2T))
             # return - temperature * np.log(2) + norm * np.abs(x)  + temperature * np.log(1 + np.exp(- A * np.abs(x)))
 
 
-        N: int = 100
-        n_vecs: int = 500
+        N: int = 1000
+        n_vecs: int = 100
         # TODO: Remove magic number
         coefs = cheby_from_dct(free_energy_func, 2*N)
         print(coefs)
-
-        vecs = torch.randn((n_vecs, base_matrix.size, 2), dtype=torch.float32)
-
+        vecs = torch.randn((n_vecs, base_matrix.size, 2)).to(dtype=torch.complex128)
 
 
-        optimizer = torch.optim.LBFGS([order_parameters], history_size=10, max_iter=50)
+        optimizer = torch.optim.LBFGS([order_parameters],lr=0.5, history_size=10, max_iter=30)
 
 
         def closure():
             optimizer.zero_grad()
             tanh = torch.tanh(order_parameters)
-            opm = torch.concat([tanh, -tanh])
-
-
+            opm = torch.concat([tanh, -tanh]) / norm
 
             def inner(v):
                 return base_matrix.matvec(v) + apply_order_parameters(
                     indices, opm, v
                 )
 
-            def alpha(v):
-                return  (2 * inner(inner(v)) - v)
-            def beta(v):
-                return -v
-
-            b_prev_prev = torch.clone(vecs)
-            b_prev = alpha(b_prev_prev)
-
-            total = torch.einsum(
-                "...ij, ...ij->...",
-                vecs, b_prev_prev
-            )* coefs[0]
-
-            total += torch.einsum(
-                "...ij, ...ij->...",
-                vecs, b_prev
-            ) * coefs[1]
-
-            for k in range(2, N):
-                temp =2 * alpha(b_prev) - b_prev_prev
-                b_prev_prev = b_prev
-                b_prev = temp
-
-                prod = torch.einsum(
-                    "...ij, ...ij->...",
-                    vecs, b_prev
-                )
-                print(f"K= {k}: prod: {prod.mean().item()}, coef: {coefs[k]}, vecs: {vecs.abs().mean().item()}")
-
-                total += prod * coefs[k]
+            trace = clenshaw_chebyshev_stochastic_estimation(
+                inner,
+                coefs,
+                vecs
+            )
 
             # assert(False)
             dot = torch.dot(tanh, tanh / potential)
-            total = total.mean()
+            total = torch.real(trace + dot)
 
-            print(total.item(), dot.item())
+            print(trace.item(), dot.item(), tanh.mean().item())
 
-            total = torch.real(total + dot)
             total.backward()
 
             return total
@@ -325,25 +187,29 @@ sigma0 = np.eye(2, dtype=np.float32)
 sigma3 = np.array([[1, 0], [0, -1]], dtype=np.float32)
 jsigma2 = np.array([[0, 1], [-1, 0]], dtype=np.float32)
 def main():
-    lat = Lattice((100, 1, 1))
 
+    N = 100
+    lat = CubicLattice((100, 1, 1))
+
+    np.fft.fftfreq()
 
     ham = PotentialHamiltonian(lat)
 
     with ham as (H, V):
-        for i in tqdm(lat.sites(), desc="Site loop"):
-            x, y, z = i
-
-            H[i, i] = - 1.0 * sigma0 #+ (x % 3) * sigma3
-            if x < 50:
-                V[i, i] = -2.0
 
         for i, j in tqdm(lat.bonds(), desc="Bond loop"):
             H[i, j] = -1 * sigma0
 
+        for i, j in lat.edges():
+            H[i, j] = -1 * sigma0
 
+        for i in tqdm(lat.sites(), desc="Site loop"):
 
-    res = ham.solve(0).detach().numpy()
+            H[i, i] = - 0.0 * sigma0 #+ (x % 3) * sigma3
+            # if x < 50:
+            V[i, i] = 2.0
+
+    res = ham.solve(0.1).detach().numpy()
     plt.plot(res)
     plt.savefig("both.pdf")
 
