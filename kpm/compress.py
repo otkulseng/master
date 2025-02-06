@@ -188,17 +188,18 @@ class PotentialHamiltonian:
 
         _, val = next(iter(self.inverse_block_lookup.items()))
         shape = tuple([len(self.inverse_block_lookup)] + list(val.shape))
-        blocks = np.zeros(shape, dtype=np.complex128)
+        blocks = np.zeros(shape, dtype=np.float32)
+
 
         for block_index, block in self.inverse_block_lookup.items():
             blocks[block_index] = block
 
-        return BlockSparseMatrix(indices, blocks)
+        return bdg_base_matrix(indices, blocks)
 
 
     def order_matrix(self):
         indices = torch.zeros((len(self.potential), 2), dtype=torch.long)
-        values = torch.zeros(len(self.potential), dtype=torch.float64)
+        values = torch.zeros(len(self.potential), dtype=torch.float32)
 
         for idx, key in enumerate(self.potential):
             i, j = key
@@ -219,14 +220,14 @@ class PotentialHamiltonian:
 
 
         # Start out with all parameters equal to 1
-        order_parameters = torch.ones(indices[:, 0].size(), requires_grad=True, dtype=torch.complex128)
-
+        order_parameters = torch.zeros(indices[:, 0].size(), requires_grad=True, dtype=torch.float32)
         # Currently, row and col is equal for s-wave
         indices = bdg_order_matrix_indices(indices)
 
 
         norm = base_matrix.norm()
-        print(norm)
+
+
 
         base_matrix = base_matrix / norm
 
@@ -235,66 +236,84 @@ class PotentialHamiltonian:
             abs_term = norm * np.abs(x) / 2
             if temperature > 0:
                 abs_term += temperature * np.log(1 + np.exp(- norm / temperature * np.abs(x)))
-            return -abs_term
+            return -abs_term / 2
             # Above equivalent to T ln(2cosh(norm x / 2T))
             # return - temperature * np.log(2) + norm * np.abs(x)  + temperature * np.log(1 + np.exp(- A * np.abs(x)))
 
 
-        N: int = 101
-        n_vecs: int = 1000
+        N: int = 100
+        n_vecs: int = 500
         # TODO: Remove magic number
         coefs = cheby_from_dct(free_energy_func, 2*N)
+        print(coefs)
 
-        vecs = torch.randn((n_vecs, base_matrix.size, 2), dtype=torch.complex128)
+        vecs = torch.randn((n_vecs, base_matrix.size, 2), dtype=torch.float32)
 
 
 
-        optimizer = torch.optim.LBFGS([order_parameters], history_size=10, max_iter=5)
+        optimizer = torch.optim.LBFGS([order_parameters], history_size=10, max_iter=50)
 
 
         def closure():
             optimizer.zero_grad()
-            opm = torch.concat([order_parameters, -order_parameters.conj()])
+            tanh = torch.tanh(order_parameters)
+            opm = torch.concat([tanh, -tanh])
+
+
+
             def inner(v):
                 return base_matrix.matvec(v) + apply_order_parameters(
                     indices, opm, v
                 )
 
             def alpha(v):
-                return 2 * (2 * inner(inner(v)) - v)
+                return  (2 * inner(inner(v)) - v)
             def beta(v):
                 return -v
 
-            b_next = torch.zeros_like(vecs)
-            b_next_next = torch.zeros_like(vecs)
-            b_curr = torch.zeros_like(vecs)
+            b_prev_prev = torch.clone(vecs)
+            b_prev = alpha(b_prev_prev)
 
-            for k in range(N-1, -1, -1):
-                b_curr = coefs[k] * vecs +  alpha(b_next) + beta(b_next_next)
-
-                if k > 0:
-                    b_next_next = b_next
-                    b_next = b_curr
-
-            b0 = b_curr
-            b1 = b_next
-            b2 = b_next_next
-            res = coefs[0]*vecs + alpha(b1) / 2 + beta(b2)
-            res = torch.einsum(
+            total = torch.einsum(
                 "...ij, ...ij->...",
-                vecs.conj(), res
-            ).mean() + torch.real(torch.dot(order_parameters / potential, order_parameters))
-            torch.real(res).backward()
+                vecs, b_prev_prev
+            )* coefs[0]
 
+            total += torch.einsum(
+                "...ij, ...ij->...",
+                vecs, b_prev
+            ) * coefs[1]
 
-            return res
+            for k in range(2, N):
+                temp =2 * alpha(b_prev) - b_prev_prev
+                b_prev_prev = b_prev
+                b_prev = temp
 
-        for i in range(50):
-            loss = optimizer.step(closure)
+                prod = torch.einsum(
+                    "...ij, ...ij->...",
+                    vecs, b_prev
+                )
+                print(f"K= {k}: prod: {prod.mean().item()}, coef: {coefs[k]}, vecs: {vecs.abs().mean().item()}")
+
+                total += prod * coefs[k]
+
+            # assert(False)
+            dot = torch.dot(tanh, tanh / potential)
+            total = total.mean()
+
+            print(total.item(), dot.item())
+
+            total = torch.real(total + dot)
+            total.backward()
+
+            return total
+
+        for i in range(1):
+            optimizer.step(closure)
             current_loss = closure().item()
-            print(f"Epoch {i+1:02d}: x = {order_parameters.mean().item():.6f}, loss = {current_loss:.6f}")
+            print(f"Epoch {i+1:02d}: x = {torch.tanh(order_parameters).mean().item():.6f}, loss = {current_loss:.6f}")
 
-
+        return torch.tanh(order_parameters)
 
 
 
@@ -302,11 +321,11 @@ class PotentialHamiltonian:
 
 
 import matplotlib.pyplot as plt
-sigma0 = np.eye(2, dtype=np.complex128)
-sigma3 = np.array([[1, 0], [0, -1]], dtype=np.complex128)
-jsigma2 = np.array([[0, 1], [-1, 0]], dtype=np.complex128)
+sigma0 = np.eye(2, dtype=np.float32)
+sigma3 = np.array([[1, 0], [0, -1]], dtype=np.float32)
+jsigma2 = np.array([[0, 1], [-1, 0]], dtype=np.float32)
 def main():
-    lat = Lattice((10, 1, 1))
+    lat = Lattice((100, 1, 1))
 
 
     ham = PotentialHamiltonian(lat)
@@ -315,20 +334,18 @@ def main():
         for i in tqdm(lat.sites(), desc="Site loop"):
             x, y, z = i
 
-            H[i, i] = - 2.0 * sigma0 #+ (x % 3) * sigma3
+            H[i, i] = - 1.0 * sigma0 #+ (x % 3) * sigma3
             if x < 50:
-                V[i, i] = -0.9
+                V[i, i] = -2.0
 
         for i, j in tqdm(lat.bonds(), desc="Bond loop"):
-            H[i, j] = -1.0 * sigma0
+            H[i, j] = -1 * sigma0
 
 
-    # print(indices)
-    # print(blocks)
 
-
-    ham.solve()
-
+    res = ham.solve(0).detach().numpy()
+    plt.plot(res)
+    plt.savefig("both.pdf")
 
 
 if __name__ == '__main__':

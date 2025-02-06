@@ -9,7 +9,7 @@ class BlockSparseMatrix:
             blocks = torch.tensor(blocks)
 
         indices = indices.to(torch.long)
-        blocks = blocks.to(torch.complex128)
+        blocks = blocks.to(torch.float32)
 
         self.indices = indices
         self.row_indices = indices[:, 0]
@@ -29,10 +29,10 @@ class BlockSparseMatrix:
 
     def norm(self):
         # Return a matrix norm
-        temp = BlockSparseMatrix(self.indices, self.blocks.abs())
+        temp = BlockSparseMatrix(self.indices, torch.abs(self.blocks))
         return temp.matvec(
             torch.ones((1, self.size, 2), dtype=self.blocks.dtype)
-        ).abs().max().item()
+        ).abs().sum().item()
 
     def to_dense(self):
         row_size = int(self.row_indices.max().item() + 1)
@@ -90,7 +90,7 @@ def main():
     matr = BlockSparseMatrix(matr, blocks)
 
     shape = (50, 2, 2)
-    vec = torch.randn(size=shape).to(torch.complex128)
+    vec = torch.randn(size=shape).to(torch.float32)
 
     res = torch.einsum("...ij, ...ij -> ...", vec.conj(), matr.matvec(vec))
 
