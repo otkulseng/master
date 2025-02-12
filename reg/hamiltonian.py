@@ -3,12 +3,16 @@ from tqdm import tqdm
 import torch
 from scipy.sparse.csgraph import connected_components
 import numpy as np
+from scipy.sparse import dok_matrix
+from matmul import BlockSparseMatrix
 
+from bdg import DenseBDGSolver
 
 class BlockReuseMatrix:
-    # Maybe faster if not dictionary based but sparse dok based.
-    def __init__(self):
-        self.data = {}
+    def __init__(self, lat: CubicLattice):
+        self.lat = lat
+        self.data = dok_matrix((lat.size, lat.size), dtype=np.int32)
+
         self.block_lookup = {}
         self.blocks = {}
 
@@ -16,76 +20,115 @@ class BlockReuseMatrix:
         return self.data[key]
 
     def __setitem__(self, key, val):
+        i, j = key
+        i = self.lat.index(i)
+        j = self.lat.index(j)
+        tup = tuple(np.ravel(val))
 
-        tup = tuple(val.ravel())
-
-        idx = self.block_lookup.get(tup, len(self.block_lookup))
+        # 1 indexed to leverage tocoo (which removes block index 0)
+        idx = self.block_lookup.get(tup, len(self.block_lookup) + 1)
         self.block_lookup[tup] = idx
 
-        self.data[key] = idx
+        self.data[i, j] = idx
         self.blocks[idx] = val
 
     def items(self):
         yield from self.data.items()
 
+    def to_tensor(self):
+        block_data = np.zeros((len(self.blocks), 2, 2), dtype=np.complex128)
+
+        for idx, blk in self.blocks.items():
+            # Remember: 1 indexed
+            block_data[idx-1] = blk
+
+        coo = self.data.tocoo()
+        row = torch.tensor(coo.row, dtype=torch.long)
+        col = torch.tensor(coo.col, dtype=torch.long)
+        idx = torch.tensor(coo.data, dtype=torch.long) - 1
+
+        return torch.vstack([row, col, idx]).T, torch.tensor(block_data)
+
+
+class PotentialMatrix:
+    def __init__(self, lat: CubicLattice):
+        self.lat = lat
+        self.data = dok_matrix((lat.size, lat.size), dtype=np.float32)
+    def __getitem__(self, key):
+        return self.data[key]
+
+    def __setitem__(self, key, val):
+        i, j = key
+        i = self.lat.index(i)
+        j = self.lat.index(j)
+
+        self.data[i, j] = val
+
+    def to_tensor(self):
+        coo = self.data.tocoo()
+        row = torch.tensor(coo.row, dtype=torch.long)
+        col = torch.tensor(coo.col, dtype=torch.long)
+        data = torch.tensor(coo.data, dtype=torch.float32)
+        return torch.vstack([row, col]).T, data
+
+
 class PotentialHamiltonian:
     def __init__(self, lat: CubicLattice):
         self.lattice = lat
-        self.potential = BlockReuseMatrix()
-        self.matrix = BlockReuseMatrix()
-        self.ham = Hamiltonian(lat)
+        self._matrix = BlockReuseMatrix(self.lattice)
 
+        self._potential = PotentialMatrix(self.lattice)
 
     def __enter__(self):
-        self._hopp = {}
-        self._pair = {}
-        return self._hopp, self._pair
+        return self._matrix, self._potential
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        # Store for later
-        self.matrix.update(self._hopp)
-        self.potential.update(self._pair)
+        pass
 
-        del self._hopp
-        del self._pair
+    def solve(self, temperature: float):
 
-    def __str__(self):
-        tot = "----Potential Hamiltonian----\n"
-        tot += f" nMatrix: {len(self.matrix)} nPotential: {len(self.potential)}\n"
-        tot += "----END----"
-        return tot
+        H_indices, H_blocks = self._matrix.to_tensor()
+        V_indices, V_potential = self._potential.to_tensor()
+        return DenseBDGSolver(
+            H_indices,H_blocks, V_indices, V_potential, temperature=torch.tensor(temperature)
+        )
 
-    def find_blocks(self):
-        # Find the permutation
-        with self.ham as (H, D):
-            for (i, j), val in self.matrix.items():
-                H[i, j] = val
-            for (i, j), val in self.potential.items():
-                D[i, j] = val
+    # def matrix(self):
+    #     indices, blocks = self._matrix.to_tensor()
+    #     indices, blocks = bdg_base_matrix(indices, blocks)
 
-        matrix = self.ham.matrix(format='bsr')
+    #     return BlockSparseMatrix(indices, blocks)
 
-        num_blocks, labels = connected_components(csgraph=(matrix != 0).astype(int))
-        perm = np.argsort(labels)
 
-        return num_blocks, perm
+    # def eigenvalues(self):
+    #     matrix = self.matrix().to_dense()
+
+    #     # eigvalsh stable for gradients
+    #     return torch.linalg.eigvalsh(matrix)
+
+
+
 
 
 def main():
 
-    lat = CubicLattice((100, 1, 1))
+    lat = CubicLattice((10, 1, 1))
     ham = PotentialHamiltonian(lat)
     with ham as (H, V):
-        for i in lat.sites():
-            H[i, i] = -0.5 * sigma0
+        # for i, j in tqdm(lat.bonds()):
+        #     H[i, j] = - 1.0 * sigma0
+
+        for i in tqdm(lat.sites()):
             x, _, _ = i
-            if x < 50:
-                V[i, i] = -2.0 * jsigma2
+            print(i)
+            H[i, i] = -0.5 * sigma0
+            if x % 2:
+                V[i, i] = -0.8
 
-        for i, j in lat.bonds():
-            H[i, j] = - 1.0 * sigma0
+        for i, j in tqdm(lat.bonds()):
+            H[i, j] = -0.9 * sigma0
+    ham.solve()
 
-    ham.find_blocks()
 
 if __name__ == '__main__':
     main()
