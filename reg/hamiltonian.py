@@ -5,8 +5,9 @@ from scipy.sparse.csgraph import connected_components
 import numpy as np
 from scipy.sparse import dok_matrix
 from matmul import BlockSparseMatrix
-
+from typing import Union, Iterable
 from bdg import DenseBDGSolver
+
 
 class BlockReuseMatrix:
     def __init__(self, lat: CubicLattice):
@@ -40,7 +41,7 @@ class BlockReuseMatrix:
 
         for idx, blk in self.blocks.items():
             # Remember: 1 indexed
-            block_data[idx-1] = blk
+            block_data[idx - 1] = blk
 
         coo = self.data.tocoo()
         row = torch.tensor(coo.row, dtype=torch.long)
@@ -54,6 +55,7 @@ class PotentialMatrix:
     def __init__(self, lat: CubicLattice):
         self.lat = lat
         self.data = dok_matrix((lat.size, lat.size), dtype=np.float32)
+
     def __getitem__(self, key):
         return self.data[key]
 
@@ -85,13 +87,33 @@ class PotentialHamiltonian:
     def __exit__(self, exc_type, exc_val, exc_tb):
         pass
 
-    def solve(self, temperature: float):
+    def solve(self, temperature: float, kmodes: Union[int, Iterable[int]] = []):
+        if isinstance(kmodes, int):
+            kmodes = [kmodes]
 
         H_indices, H_blocks = self._matrix.to_tensor()
         V_indices, V_potential = self._potential.to_tensor()
-        return DenseBDGSolver(
-            H_indices,H_blocks, V_indices, V_potential, temperature=torch.tensor(temperature)
+        function = DenseBDGSolver(
+            H_indices,
+            H_blocks,
+            V_indices,
+            V_potential,
+            temperature=torch.tensor(temperature),
+            kmodes=torch.tensor(kmodes),
         )
+
+        x0 = torch.ones_like(V_potential)
+        for i in range(100):
+            xn = function.forward(x0)
+            print(f"Iteration: {i}")
+            print("Mean:", torch.mean(torch.abs(xn)).item())
+            diff = torch.linalg.norm(xn - x0).item()
+            print("Diff: ", torch.linalg.norm(xn - x0).item())
+
+            x0 = xn
+
+            if diff < 1e-3:
+                return x0.numpy()
 
     # def matrix(self):
     #     indices, blocks = self._matrix.to_tensor()
@@ -99,36 +121,33 @@ class PotentialHamiltonian:
 
     #     return BlockSparseMatrix(indices, blocks)
 
-
     # def eigenvalues(self):
     #     matrix = self.matrix().to_dense()
 
     #     # eigvalsh stable for gradients
     #     return torch.linalg.eigvalsh(matrix)
 
-
-
-
+import matplotlib.pyplot as plt
 
 def main():
-
-    lat = CubicLattice((10, 1, 1))
+    lat = CubicLattice((100, 1, 1))
     ham = PotentialHamiltonian(lat)
     with ham as (H, V):
-        # for i, j in tqdm(lat.bonds()):
-        #     H[i, j] = - 1.0 * sigma0
-
         for i in tqdm(lat.sites()):
             x, _, _ = i
-            print(i)
-            H[i, i] = -0.5 * sigma0
-            if x % 2:
-                V[i, i] = -0.8
+            H[i, i] = -0.1 * sigma0
+            V[i, i] = -1.0
 
         for i, j in tqdm(lat.bonds()):
-            H[i, j] = -0.9 * sigma0
-    ham.solve()
+            H[i, j] = -1.0 * sigma0
+    x0 = ham.solve(
+        0.0,
+        kmodes=[500]
+    )
+
+    plt.plot(x0)
+    plt.savefig("temp.pdf")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -43,7 +43,21 @@ class DenseBDGSolver:
 
         self.temperature = temperature
         self.beta = 1.0 / (1e-15 + self.temperature)
-        self.kmodes = kmodes.to(torch.complex128)
+
+        # K modes is a up to 3d list of diagonal entries
+        freqs = [
+            2 * torch.cos(2 * torch.pi * torch.fft.fftfreq(N)) for N in kmodes
+        ]
+
+        kmodes = sum(torch.meshgrid(freqs, indexing='ij')).reshape(-1)
+
+        unique_elements, counts = torch.unique(kmodes, return_counts=True)
+        self.kmode_weights = (counts / kmodes.shape[0]).to(torch.complex128)
+        self.kmodes = unique_elements
+
+
+        print(f"Number of unique k modes: {self.kmode_weights.shape}")
+
         self.diag_mask = torch.diag(torch.tensor([1, 1, -1, -1]).repeat(N))
 
         self.potential = V_potential
@@ -80,11 +94,12 @@ class DenseBDGSolver:
         vdo = Q[..., 3]
         tanhe = torch.tanh(self.beta * L / 2)
 
-        return (
+        # TODO: Smarter k-mode handling
+        return self.kmode_weights @ (
             (udo.conj() * vup - uup.conj() * vdo)
             * self.potential.view(1, 1, -1)
             * tanhe.unsqueeze(-1) / 2
-        ).sum(axis=1).mean(axis=0)
+        ).sum(axis=1)
 
 
 def main():
