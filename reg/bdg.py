@@ -1,4 +1,5 @@
 import torch
+from dct import dct, idct, dst, idst
 
 
 class DenseBDGSolver(torch.nn.Module):
@@ -9,7 +10,8 @@ class DenseBDGSolver(torch.nn.Module):
         V_indices: torch.Tensor,
         V_potential: torch.Tensor,
         temperature: torch.Tensor,
-        kmodes: torch.Tensor = torch.tensor(0.0, dtype=torch.complex128),
+        kmodes: list[int],
+        cosine_threshold: float = 1e-3,
     ):
         super().__init__()
         # Step 1, generate dense base matrix
@@ -42,11 +44,9 @@ class DenseBDGSolver(torch.nn.Module):
         self.beta = 1.0 / (1e-15 + self.temperature)
 
         # K modes is a up to 3d list of diagonal entries
-        freqs = [
-            2 * torch.cos(2 * torch.pi * torch.fft.fftfreq(N)) for N in kmodes
-        ]
+        freqs = [2 * torch.cos(2 * torch.pi * torch.fft.fftfreq(N)) for N in kmodes]
 
-        mesh: list[torch.Tensor] = list(torch.meshgrid(freqs, indexing='ij'))
+        mesh: list[torch.Tensor] = list(torch.meshgrid(freqs, indexing="ij"))
         kmodes = torch.stack(mesh, dim=0)
         kmodes = kmodes.sum(dim=0).reshape(-1)
 
@@ -54,33 +54,50 @@ class DenseBDGSolver(torch.nn.Module):
         self.kmode_weights = (counts / kmodes.shape[0]).to(torch.complex128)
         self.kmodes = unique_elements
 
-
         print(f"Number of unique k modes: {self.kmode_weights.shape}")
 
         self.diag_mask = torch.diag(torch.tensor([1, 1, -1, -1]).repeat(N))
-
         self.potential = V_potential
-    # @torch.jit.script_m
-    def zero_func(self, x):
-        return self.forward(x) - x
 
-    def forward(self, x: torch.Tensor):
+        self.cosine_threshold = cosine_threshold
+
+    # @torch.jit.script_m
+    def zero_func(self, x: torch.Tensor):
+        # X are cosine wave coefficients. Expand using inverse discrete cosine transform
+        signal = idct(x)
+        res = self.forward(signal)
+        res_x = dct(res)
+
+        # Keep only cosine modes that fall above some predefined threshold
+        threshold = self.cosine_threshold * res_x.abs().mean().item()
+        res_x[res_x.abs() < threshold] = 0.0
+        return res_x - x
+
+    def insert_deltas(self, x: torch.Tensor):
+        # x is of shape (batch, N)
         jsigma2 = torch.tensor([[0, 1], [-1, 0]], dtype=torch.complex128)
-        top_vals = x.view(-1, 1, 1) * jsigma2
+        top_vals = x.view(-1, 1, 1) * jsigma2  # (batch, N, 2, 2)
         bot_vals = top_vals.conj().transpose(-2, -1)
 
         base_matrix = self.base_matrix
         row = self.potential_rows
         col = self.potential_cols
-        base_matrix[row.unsqueeze(-1), col.unsqueeze(1)] = top_vals
-        base_matrix[col.unsqueeze(-1), row.unsqueeze(1)] = bot_vals
+        base_matrix[row.unsqueeze(-1), col.unsqueeze(-2)] = top_vals
+        base_matrix[col.unsqueeze(-1), row.unsqueeze(-2)] = bot_vals
+        return base_matrix
 
+    def insert_kmodes(self, base_matrix: torch.Tensor):
+        return base_matrix.unsqueeze(0) + self.kmodes.view(
+            -1, 1, 1
+        ) * self.diag_mask.unsqueeze(0)  # .to(torch.complex64)
+
+    def matrix(self, x: torch.Tensor):
+        return self.insert_kmodes(self.insert_deltas(x))
+
+    def forward(self, x: torch.Tensor):
         # Do batched diagonalisation, one for each k-mode
-        L, Q = torch.linalg.eigh(
-            (base_matrix.unsqueeze(0)
-            + self.kmodes.view(-1, 1, 1) * self.diag_mask.unsqueeze(0))#.to(torch.complex64)
-        )
-        # Q = Q.to(torch.complex128)
+
+        L, Q = torch.linalg.eigh(self.matrix(x))
 
         # Keep only positive
         mask = L > 0
@@ -90,7 +107,7 @@ class DenseBDGSolver(torch.nn.Module):
 
         # Q: (num_batches, 2N, N, 4) == (num_batches, eigenvalues, position, Nambu)
         Q = Q.transpose(-2, -1)[mask].view(L.shape[0], L.shape[1], -1, 4)
-        Q = Q[:, :, self.potential_indices, :] # (n_b, E, pos, N)
+        Q = Q[:, :, self.potential_indices, :]  # (n_b, E, pos, N)
         uup = Q[:, :, :, 0]  # (num_batches, eigenvalues, position)
         udo = Q[:, :, :, 1]
         vup = Q[:, :, :, 2]
@@ -100,57 +117,31 @@ class DenseBDGSolver(torch.nn.Module):
         return self.kmode_weights @ torch.sum(
             (udo.conj() * vup - uup.conj() * vdo)
             * self.potential.view(1, 1, -1)
-            * tanhe.unsqueeze(-1) / 2, dim=1
+            * tanhe.unsqueeze(-1)
+            / 2,
+            dim=1,
         )
 
+    def free_energy(self, x: torch.Tensor):
+        evals = torch.linalg.eigvalsh(self.matrix(x))
 
-def main():
-    indices = torch.tensor(
-        [[0, 0, 0], [0, 1, 1], [1, 0, 0], [1, 1, 1]], dtype=torch.long
-    )
+        # Only the positive eigenvalues contribute to the calculation
+        evals = evals[evals > 0]
 
-    order_params = torch.tensor([1])
-    order_params = torch.concat([order_params, -order_params.conj()])
+        # Superconducting contribution
+        E0 = torch.dot(x.conj(), x / self.potential)
 
-    indices = torch.tensor(
-        [
-            [1, 1],
-            # [1, 1]
-        ]
-    )
+        # Non-entropic contribution
+        H0 = - 1 / 2 * torch.sum(evals)
 
-    rowcol = bdg_order_matrix_indices(indices)
+        # Entropy
+        S = torch.sum(torch.log(1 + torch.exp(- self.beta * evals)))
 
-    shape = (1, 4, 2)
-    vec = torch.randn(size=shape).to(torch.float32)
-    res = apply_order_parameters(rowcol, order_params, vec)
-
-    print(res)
-    assert False
-
-    blocks = torch.tensor(
-        [
-            [
-                [1, 2],
-                [3, 4],
-            ],
-            [[5, 6], [7, 8]],
-        ]
-    )
-    bdg_base_matrix(indices, blocks)
+        # Final result
+        return E0 + H0 - self.temperature * S
+    def condensation_energy(self, x: torch.Tensor):
+        return self.free_energy(x) - self.free_energy(torch.zeros_like(x))
 
 
-def main():
-    test = torch.arange(4)
-    matr = torch.zeros((4, 4))
-
-    matr[0, :] = test
-    print(matr)
-
-    test[0] = 2
-    print(test)
-    print(matr)
 
 
-if __name__ == "__main__":
-    main()

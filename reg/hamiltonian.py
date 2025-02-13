@@ -8,6 +8,7 @@ from matmul import BlockSparseMatrix
 from typing import Union, Iterable
 from bdg import DenseBDGSolver
 from optimization import broydenB2, broydenB1
+from dct import dct, idct
 
 import torch._dynamo
 torch._dynamo.config.suppress_errors = True
@@ -89,7 +90,7 @@ class PotentialHamiltonian:
     def __exit__(self, exc_type, exc_val, exc_tb):
         pass
 
-    def solve(self, temperature: float, kmodes: Union[int, Iterable[int]] = []):
+    def solve(self, temperature: float, kmodes: Union[int, Iterable[int]] = [], cosine_epsilon=1e-3):
         if isinstance(kmodes, int):
             kmodes = [kmodes]
 
@@ -103,17 +104,21 @@ class PotentialHamiltonian:
             V_potential,
             temperature=torch.tensor(temperature),
             kmodes=torch.tensor(kmodes),
+            cosine_threshold=cosine_epsilon
         )
 
         # func = torch.compile(solver.zero_func) NOTE: Does not support complex numbers
 
         before = time.time()
-        x0 = torch.ones_like(V_potential).to(torch.complex128)
+
+
+        x0 = torch.zeros_like(V_potential).to(torch.complex128)
+        x0[0] = 1.0
 
         res = broydenB2(solver.zero_func, x0, verbose=True, eps=1e-5)
-
         print(f'Elapsed: {time.time() - before}')
-        return res.numpy()
+
+        return idct(res).numpy()
 
     # def matrix(self):
     #     indices, blocks = self._matrix.to_tensor()
@@ -135,19 +140,20 @@ def main():
     with ham as (H, V):
         for i in tqdm(lat.sites()):
             x, _, _ = i
-            H[i, i] = -0.1 * sigma0
+            H[i, i] = -0.2 * sigma0
             if x < 50:
-                V[i, i] = -1.0
+                V[i, i] = -0.6
 
         for i, j in tqdm(lat.bonds()):
             H[i, j] = -1.0 * sigma0
 
     x0 = ham.solve(
         0.0,
-        kmodes=[100]
+        kmodes=[100],
+        cosine_epsilon=1e-3
     )
 
-    plt.plot(x0)
+    plt.plot(np.real(x0))
     plt.savefig("temp.pdf")
 
 
