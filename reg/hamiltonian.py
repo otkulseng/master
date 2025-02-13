@@ -7,8 +7,10 @@ from scipy.sparse import dok_matrix
 from matmul import BlockSparseMatrix
 from typing import Union, Iterable
 from bdg import DenseBDGSolver
+from optimization import broydenB2, broydenB1
 
-
+import torch._dynamo
+torch._dynamo.config.suppress_errors = True
 class BlockReuseMatrix:
     def __init__(self, lat: CubicLattice):
         self.lat = lat
@@ -93,7 +95,8 @@ class PotentialHamiltonian:
 
         H_indices, H_blocks = self._matrix.to_tensor()
         V_indices, V_potential = self._potential.to_tensor()
-        function = DenseBDGSolver(
+
+        solver = DenseBDGSolver(
             H_indices,
             H_blocks,
             V_indices,
@@ -102,18 +105,15 @@ class PotentialHamiltonian:
             kmodes=torch.tensor(kmodes),
         )
 
-        x0 = torch.ones_like(V_potential)
-        for i in range(100):
-            xn = function.forward(x0)
-            print(f"Iteration: {i}")
-            print("Mean:", torch.mean(torch.abs(xn)).item())
-            diff = torch.linalg.norm(xn - x0).item()
-            print("Diff: ", torch.linalg.norm(xn - x0).item())
+        # func = torch.compile(solver.zero_func) NOTE: Does not support complex numbers
 
-            x0 = xn
+        before = time.time()
+        x0 = torch.ones_like(V_potential).to(torch.complex128)
 
-            if diff < 1e-3:
-                return x0.numpy()
+        res = broydenB2(solver.zero_func, x0, verbose=True, eps=1e-5)
+
+        print(f'Elapsed: {time.time() - before}')
+        return res.numpy()
 
     # def matrix(self):
     #     indices, blocks = self._matrix.to_tensor()
@@ -128,7 +128,7 @@ class PotentialHamiltonian:
     #     return torch.linalg.eigvalsh(matrix)
 
 import matplotlib.pyplot as plt
-
+import time
 def main():
     lat = CubicLattice((100, 1, 1))
     ham = PotentialHamiltonian(lat)
@@ -136,13 +136,15 @@ def main():
         for i in tqdm(lat.sites()):
             x, _, _ = i
             H[i, i] = -0.1 * sigma0
-            V[i, i] = -1.0
+            if x < 50:
+                V[i, i] = -1.0
 
         for i, j in tqdm(lat.bonds()):
             H[i, j] = -1.0 * sigma0
+
     x0 = ham.solve(
         0.0,
-        kmodes=[500]
+        kmodes=[100]
     )
 
     plt.plot(x0)

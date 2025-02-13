@@ -1,11 +1,7 @@
-from matmul import BlockSparseMatrix
 import torch
-import numpy as np
-
-jsigma2 = torch.tensor([[0, 1], [-1, 0]], dtype=torch.complex128)
 
 
-class DenseBDGSolver:
+class DenseBDGSolver(torch.nn.Module):
     def __init__(
         self,
         H_indices: torch.Tensor,
@@ -13,8 +9,9 @@ class DenseBDGSolver:
         V_indices: torch.Tensor,
         V_potential: torch.Tensor,
         temperature: torch.Tensor,
-        kmodes: torch.Tensor = torch.tensor(0.0),
+        kmodes: torch.Tensor = torch.tensor(0.0, dtype=torch.complex128),
     ):
+        super().__init__()
         # Step 1, generate dense base matrix
         N = int(H_indices[:, 0].max().item() + 1)
         base_matrix = torch.zeros((4 * N, 4 * N), dtype=torch.complex128)
@@ -49,7 +46,9 @@ class DenseBDGSolver:
             2 * torch.cos(2 * torch.pi * torch.fft.fftfreq(N)) for N in kmodes
         ]
 
-        kmodes = sum(torch.meshgrid(freqs, indexing='ij')).reshape(-1)
+        mesh: list[torch.Tensor] = list(torch.meshgrid(freqs, indexing='ij'))
+        kmodes = torch.stack(mesh, dim=0)
+        kmodes = kmodes.sum(dim=0).reshape(-1)
 
         unique_elements, counts = torch.unique(kmodes, return_counts=True)
         self.kmode_weights = (counts / kmodes.shape[0]).to(torch.complex128)
@@ -61,9 +60,12 @@ class DenseBDGSolver:
         self.diag_mask = torch.diag(torch.tensor([1, 1, -1, -1]).repeat(N))
 
         self.potential = V_potential
-
+    # @torch.jit.script_m
+    def zero_func(self, x):
+        return self.forward(x) - x
 
     def forward(self, x: torch.Tensor):
+        jsigma2 = torch.tensor([[0, 1], [-1, 0]], dtype=torch.complex128)
         top_vals = x.view(-1, 1, 1) * jsigma2
         bot_vals = top_vals.conj().transpose(-2, -1)
 
@@ -75,9 +77,10 @@ class DenseBDGSolver:
 
         # Do batched diagonalisation, one for each k-mode
         L, Q = torch.linalg.eigh(
-            base_matrix.unsqueeze(0)
-            + self.kmodes.view(-1, 1, 1) * self.diag_mask.unsqueeze(0)
+            (base_matrix.unsqueeze(0)
+            + self.kmodes.view(-1, 1, 1) * self.diag_mask.unsqueeze(0))#.to(torch.complex64)
         )
+        # Q = Q.to(torch.complex128)
 
         # Keep only positive
         mask = L > 0
@@ -87,19 +90,18 @@ class DenseBDGSolver:
 
         # Q: (num_batches, 2N, N, 4) == (num_batches, eigenvalues, position, Nambu)
         Q = Q.transpose(-2, -1)[mask].view(L.shape[0], L.shape[1], -1, 4)
-        Q = Q[..., self.potential_indices, :]
-        uup = Q[..., 0]  # (num_batches, eigenvalues, position)
-        udo = Q[..., 1]
-        vup = Q[..., 2]
-        vdo = Q[..., 3]
+        Q = Q[:, :, self.potential_indices, :] # (n_b, E, pos, N)
+        uup = Q[:, :, :, 0]  # (num_batches, eigenvalues, position)
+        udo = Q[:, :, :, 1]
+        vup = Q[:, :, :, 2]
+        vdo = Q[:, :, :, 3]
         tanhe = torch.tanh(self.beta * L / 2)
 
-        # TODO: Smarter k-mode handling
-        return self.kmode_weights @ (
+        return self.kmode_weights @ torch.sum(
             (udo.conj() * vup - uup.conj() * vdo)
             * self.potential.view(1, 1, -1)
-            * tanhe.unsqueeze(-1) / 2
-        ).sum(axis=1)
+            * tanhe.unsqueeze(-1) / 2, dim=1
+        )
 
 
 def main():
