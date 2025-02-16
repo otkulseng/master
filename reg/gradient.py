@@ -52,8 +52,7 @@ def eigenvalue_perturbation_gradient(
         Idx (torch.Tensor): _description_
     """
 
-    eps = 1e-10
-    K = eps * torch.tensor(
+    K =  torch.tensor(
         [
             [0, 0, 0, 1],
             [0, 0, -1, 0],
@@ -64,14 +63,14 @@ def eigenvalue_perturbation_gradient(
     )
     B, size = L.shape
     N = size // 4
-    nnz = Idx.numel()
+    nnz = Potential.shape[0]
 
 
     Q_b = Q.transpose(-1, -2).view(B, 4 * N, N, 4).transpose(1, 2)
     Q_b = Q_b[:, Idx, :, :]
 
     # Batched multiplication
-    K_Q = torch.matmul(Q_b, K.view(1, 1, 4, 4))
+    K_Q = torch.matmul(Q_b[:, :, -2*N:, :], K.view(1, 1, 4, 4))
 
     Q_b = Q_b.transpose(-2, -1)
 
@@ -80,12 +79,9 @@ def eigenvalue_perturbation_gradient(
         denom.abs() < 1e-10, torch.inf, denom
     )[:, -2*N:, :]  # Zeros out contributions in this case
 
-    out = torch.zeros((B, K_Q.size(1), K_Q.size(1)), dtype=torch.complex128)
 
     # Keep positive eigenvalues
     tanhe = torch.tanh(Beta * L[:, -2*N:] / 2) # (B, 2N)
-
-    x0 = batch_consistency(L, Q, Idx, Beta, Potential)
 
     Q = Q.transpose(-1, -2).view(B, 4*N, N, 4)
     Q = Q[:, :, Idx, 1:3]
@@ -93,34 +89,19 @@ def eigenvalue_perturbation_gradient(
     udo_0 = Q[:, -2*N:, :, 0]
     vup_0 = Q[:, -2*N:, :, 1]
 
-    for n in range(Potential.shape[0]):
+    out = torch.zeros((B, nnz, nnz), dtype=torch.complex128)
+    for n in range(nnz):
         # Numerator in eigenvalue perturbation
-        Q_K_Q = torch.matmul(K_Q[:, n, -2*N:, :], Q_b[:, n, :, :])  # (B, 4N, 4N)
-
-        # # Change in eigenvalues on the diagonal
-        # L_diff = torch.diagonal(Q_K_Q, dim1=-2, dim2=-1).real  # (B, 4N)
-
-        # Eigenvector factors are Q_K_Q / denom
+        Q_K_Q = torch.matmul(K_Q[:, n, :, :], Q_b[:, n, :, :])  # (B, 4N, 4N)
         evec_factor = Q_K_Q / denom  # (B, 4N, 4N)
-
-        # Q_diff = torch.matmul(evec_factor[:, -2*N:, :], Q)  # (B, 2N, 4N) x (B, 4N, N, 4)
-
         Q_diff = torch.einsum("bij, bjkl->bikl", evec_factor, Q)
-        # Q_new = Q[:, -2*N:, :] + Q_diff
-
-        # # Keep only Eigenvector for positive eigenvalues
-        # Q_new = Q + Q_diff.view(B, 2*N, N, 4)
-        # Q_new = Q[:, -2*N:, :, :] + Q_diff
-        # udo = Q_diff[:, :, :, 0] + udo_0
-        # vup = Q_diff[:, :, :, 1] + vup_0
 
         udiff = Q_diff[..., 0]
         vdiff = Q_diff[..., 1]
-        dx = torch.sum(
-            ((udo_0 + udiff).conj() * (vup_0 + vdiff)) * Potential.view(1, 1, -1) * tanhe.unsqueeze(-1),
+
+        out[:, :, n] = torch.sum(
+            (udo_0.conj() * vdiff + udiff.conj() * vup_0) * Potential.view(1, 1, -1) * tanhe.unsqueeze(-1),
             dim=1,
-        ) - x0
+        )
 
-
-        out[:, :, n] = dx / eps
     return out

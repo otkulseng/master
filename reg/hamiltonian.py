@@ -123,14 +123,14 @@ class PotentialHamiltonian:
 import matplotlib.pyplot as plt
 import time
 def main():
-    lat = CubicLattice((100, 1, 1))
+    lat = CubicLattice((200, 1, 1))
     ham = PotentialHamiltonian(lat)
     with ham as (H, V):
         for i in tqdm(lat.sites()):
             x, _, _ = i
             H[i, i] = -0.1 * sigma0
 
-            if x < 50:
+            if x < 100:
                 V[i, i] = -1.0
 
         for i, j in tqdm(lat.bonds()):
