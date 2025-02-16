@@ -153,14 +153,24 @@ class DenseBDGSolver(torch.nn.Module):
         return self.potential * res
 
     def consistency(self, L: torch.Tensor, Q: torch.Tensor):
-        return batch_consistency(
-            L, Q, self.potential_indices, self.beta, self.kmode_weights, self.potential
+        return self.kmode_weights @ batch_consistency(
+            L, Q, self.potential_indices, self.beta, self.potential
         )
 
+    # def calculate_gradient(self, L: torch.Tensor, Q: torch.Tensor, x0: torch.Tensor):
+    #     pass
     def calculate_gradient(self, L: torch.Tensor, Q: torch.Tensor, x0: torch.Tensor):
-        self._grad = eigenvalue_perturbation_gradient(
-            L, Q, self.potential_indices, self.beta, self.kmode_weights, self.potential
-        )  # (B, N, N)
+
+        self._grad =(self.kmode_weights.view(-1, 1, 1) *
+            eigenvalue_perturbation_gradient(
+                L,
+                Q,
+                self.potential_indices,
+                self.beta,
+                self.potential,
+            )
+        ).sum(0)  # (B, N, N)
+
 
     def calculate_gradient_gfdfg(
         self, L: torch.Tensor, Q: torch.Tensor, x0: torch.Tensor
@@ -243,6 +253,8 @@ class DenseBDGSolver(torch.nn.Module):
 
         mid = time.time()
 
+        print("Starting gradient")
+
         # Use eigenvalue perturbation to calculate the gradient
         self.calculate_gradient(L, Q, delta_0)
 
@@ -281,6 +293,7 @@ class DenseBDGSolver(torch.nn.Module):
         # Final result
         return E0 + H0 - self.temperature * S
 
+
     def condensation_energy(self, x: torch.Tensor):
         return self.free_energy(x) - self.free_energy(torch.zeros_like(x))
 
@@ -292,7 +305,7 @@ class DenseBDGSolver(torch.nn.Module):
 
         res = newton(self, x0, verbose=True)
 
-        print(res.numpy())
+        return res.numpy()
         assert False
 
         # res = broydenB2(self.zero_func, x0, verbose=True, eps=1e-5)

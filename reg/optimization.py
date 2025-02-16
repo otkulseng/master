@@ -166,6 +166,8 @@ def newton(
         # print("Largest: ", (gr - torch.tensor(jac)).abs().max().item())
         # # assert(False)
 
+        
+
         x0 = x0 + torch.linalg.solve(f.grad(x0), -f0)
     return best_x
 

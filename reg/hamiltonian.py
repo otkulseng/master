@@ -130,14 +130,15 @@ def main():
             x, _, _ = i
             H[i, i] = -0.1 * sigma0
 
-            V[i, i] = -2.0
+            if x < 50:
+                V[i, i] = -1.0
 
         for i, j in tqdm(lat.bonds()):
             H[i, j] = -1.0 * sigma0
 
     x0 = ham.solve(
         0.0, #between 0.25 and 0.275
-        kmodes=[100]
+        kmodes=[200]
     )
 
     plt.plot(x0)
