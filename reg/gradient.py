@@ -78,7 +78,7 @@ def eigenvalue_perturbation_gradient(
     denom = L.unsqueeze(-1) - L.unsqueeze(-2)  # (B, 4N, 4N)
     denom = torch.where(
         denom.abs() < 1e-10, torch.inf, denom
-    )  # Zeros out contributions in this case
+    )[:, -2*N:, :]  # Zeros out contributions in this case
 
     out = torch.zeros((B, K_Q.size(1), K_Q.size(1)), dtype=torch.complex128)
 
@@ -90,12 +90,12 @@ def eigenvalue_perturbation_gradient(
     Q = Q.transpose(-1, -2).view(B, 4*N, N, 4)
     Q = Q[:, :, Idx, 1:3]
 
-    udo_0 = Q[:, :, :, 0]
-    vup_0 = Q[:, :, :, 1]
+    udo_0 = Q[:, -2*N:, :, 0]
+    vup_0 = Q[:, -2*N:, :, 1]
 
     for n in range(Potential.shape[0]):
         # Numerator in eigenvalue perturbation
-        Q_K_Q = torch.matmul(K_Q[:, n, :, :], Q_b[:, n, :, :])  # (B, 4N, 4N)
+        Q_K_Q = torch.matmul(K_Q[:, n, -2*N:, :], Q_b[:, n, :, :])  # (B, 4N, 4N)
 
         # # Change in eigenvalues on the diagonal
         # L_diff = torch.diagonal(Q_K_Q, dim1=-2, dim2=-1).real  # (B, 4N)
@@ -105,17 +105,19 @@ def eigenvalue_perturbation_gradient(
 
         # Q_diff = torch.matmul(evec_factor[:, -2*N:, :], Q)  # (B, 2N, 4N) x (B, 4N, N, 4)
 
-        Q_diff = torch.einsum("bij, bjkl->bikl", evec_factor[:, -2*N:, :], Q)
+        Q_diff = torch.einsum("bij, bjkl->bikl", evec_factor, Q)
         # Q_new = Q[:, -2*N:, :] + Q_diff
 
         # # Keep only Eigenvector for positive eigenvalues
         # Q_new = Q + Q_diff.view(B, 2*N, N, 4)
-        Q_new = Q[:, -2*N:, :, :] + Q_diff
-        udo = Q_new[:, :, :, 0]
-        vup = Q_new[:, :, :, 1]
+        # Q_new = Q[:, -2*N:, :, :] + Q_diff
+        # udo = Q_diff[:, :, :, 0] + udo_0
+        # vup = Q_diff[:, :, :, 1] + vup_0
 
+        udiff = Q_diff[..., 0]
+        vdiff = Q_diff[..., 1]
         dx = torch.sum(
-            (udo.conj() * vup) * Potential.view(1, 1, -1) * tanhe.unsqueeze(-1),
+            ((udo_0 + udiff).conj() * (vup_0 + vdiff)) * Potential.view(1, 1, -1) * tanhe.unsqueeze(-1),
             dim=1,
         ) - x0
 
