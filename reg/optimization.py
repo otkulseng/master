@@ -156,15 +156,15 @@ def newton(
         if torch.max(torch.abs(best_x)) < x_norm:
             break
 
-        gr = torch.clone(f.grad(x0)).real
-        def inner(x):
-            x = torch.tensor(np.real(x)).to(torch.complex128)
-            return torch.real(f.eval(x)).numpy()
-        jac = approx_fprime(x0, inner)
-        # Perform newton step
-        print(gr)
-        print(jac)
-        assert(False)
+        # gr = torch.clone(f.grad(x0)).real
+        # def inner(x):
+        #     x = torch.tensor(np.real(x)).to(torch.complex128)
+        #     return torch.real(f.eval(x)).numpy()
+        # jac = approx_fprime(x0, inner)
+        # # Perform newton step
+
+        # print("Largest: ", (gr - torch.tensor(jac)).abs().max().item())
+        # # assert(False)
 
         x0 = x0 + torch.linalg.solve(f.grad(x0), -f0)
     return best_x

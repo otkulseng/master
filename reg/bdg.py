@@ -3,6 +3,9 @@ from dct import dct, idct
 import time
 from optimization import broydenB2, newton
 
+import matplotlib.pyplot as plt
+from gradient import eigenvalue_perturbation_gradient, batch_consistency
+
 
 class DenseBDGSolver(torch.nn.Module):
     def __init__(
@@ -69,11 +72,12 @@ class DenseBDGSolver(torch.nn.Module):
 
         self._L = None
         self._Q = None
-        self._grad = torch.zeros((self.potential.numel(), self.potential.numel()), dtype=torch.complex128)
-
+        self._grad = torch.zeros(
+            (self.potential.numel(), self.potential.numel()), dtype=torch.complex128
+        )
 
     def grad(self, x: torch.Tensor, eps: float = 1e-5):
-        return self._grad  - torch.eye(x.numel(), dtype=torch.complex128)
+        return self._grad - torch.eye(x.numel(), dtype=torch.complex128)
 
     def eval(self, x: torch.Tensor):
         return self.zero_func(x)
@@ -112,19 +116,25 @@ class DenseBDGSolver(torch.nn.Module):
     def matrix(self, x: torch.Tensor):
         return self.insert_kmodes(self.insert_deltas(x))
 
-
-    def consistency(self, L: torch.Tensor, Q: torch.Tensor):
-        # Keep only positive eigenvalues
+    def consistency_v0(self, L: torch.Tensor, Q: torch.Tensor):
         L = torch.real(L)
+
+        B = L.shape[0]
+        size = L.shape[1]
+        N = size // 4
+
         Q = Q.to(torch.complex128)
+        Q = Q.transpose(-2, -1).view(L.shape[0], L.shape[1], -1, 4)  # (B, 4N, N, 4)
+
+        # Keep only positive eigenvalues
         mask = L > 0
+        Q = Q[mask].view(B, 2 * N, N, 4)
 
         # L: (num_batches, 2N) positive eigenvalues
         L = L[mask].view(Q.shape[0], -1)
 
         # Q: (num_batches, 2N, N, 4) == (num_batches, eigenvalues, position, Nambu)
-        Q = Q.transpose(-2, -1)[mask].view(L.shape[0], L.shape[1], -1, 4)
-        Q = Q[:, :, self.potential_indices, :]  # (n_b, E, pos, N)
+        Q = Q[:, :, self.potential_indices, :]  # (B, 2N, nnz, 4)
 
         # # Store for gradient
         # self._L = torch.clone(L)
@@ -136,12 +146,25 @@ class DenseBDGSolver(torch.nn.Module):
         # vdo: torch.Tensor = Q[:, :, :, 3] # (num_batches, eigenvalues, position)
         tanhe = torch.tanh(self.beta * L / 2)
 
-        return self.kmode_weights @ torch.sum(
-            (udo.conj() * vup) * self.potential.view(1, 1, -1) * tanhe.unsqueeze(-1),
+        res = self.kmode_weights @ torch.sum(
+            (udo.conj() * vup) * tanhe.unsqueeze(-1),
             dim=1,
+        )
+        return self.potential * res
+
+    def consistency(self, L: torch.Tensor, Q: torch.Tensor):
+        return batch_consistency(
+            L, Q, self.potential_indices, self.beta, self.kmode_weights, self.potential
         )
 
     def calculate_gradient(self, L: torch.Tensor, Q: torch.Tensor, x0: torch.Tensor):
+        self._grad = eigenvalue_perturbation_gradient(
+            L, Q, self.potential_indices, self.beta, self.kmode_weights, self.potential
+        )  # (B, N, N)
+
+    def calculate_gradient_gfdfg(
+        self, L: torch.Tensor, Q: torch.Tensor, x0: torch.Tensor
+    ):
         """_summary_
 
         Args:
@@ -149,7 +172,8 @@ class DenseBDGSolver(torch.nn.Module):
             Q (torch.Tensor): (B, 4N, 4N)
             x0 (torch.Tensor): nnz
         """
-        eps = 1e-6
+        print("Entered gradient")
+        eps = 1e-8
         K = eps * torch.tensor(
             [
                 [0, 0, 0, 1],
@@ -162,20 +186,19 @@ class DenseBDGSolver(torch.nn.Module):
         B, size = L.shape
         N = size // 4
 
-        Q_b = Q.transpose(-1, -2) # Now, L[b, n] correspond to vector Q[b, n, :]
+        Q_b = Q.transpose(-1, -2)  # Now, L[b, n] correspond to vector Q[b, n, :]
 
         # (Batch, Eigenvalues, Position, Nambu)
-        Q_b = Q_b.view(B, 4*N, N, 4)
+        Q_b = Q_b.view(B, 4 * N, N, 4)
 
         # Remove all unnecessary blocks.
         # Resulting
-        Q_b = Q_b[:, :, self.potential_indices, :] # (B, 4N, nnz, 4)
+        Q_b = Q_b[:, :, self.potential_indices, :]  # (B, 4N, nnz, 4)
 
-        Q_b = Q_b.transpose(1, 2) # (B, nnz, 4N, 4)
+        Q_b = Q_b.transpose(1, 2)  # (B, nnz, 4N, 4)
 
-        K_Q = torch.matmul(Q_b, K.view(1, 1, 4, 4) )  # shape (B, nnz, 4N, 4)
-
-
+        print("Performing outer block multiplication")
+        K_Q = torch.matmul(Q_b, K.view(1, 1, 4, 4))  # shape (B, nnz, 4N, 4)
 
         # Now, would like to do Q^T K_Q. However, this would result in
         # tensor of shape (B, N, 4N, 4N) which is prohibitively large.
@@ -193,24 +216,27 @@ class DenseBDGSolver(torch.nn.Module):
         )  # Zeros out contributions in this case
 
         for n in range(K_Q.size(1)):
+            # Numerator in eigenvalue perturbation
+
             Q_K_Q = torch.matmul(K_Q[:, n, :, :], Q_b[:, n, :, :])  # (B, 4N, 4N)
 
-            # # Change in eigenvalues on the diagonal
+            # Change in eigenvalues on the diagonal
             L_diff = torch.diagonal(Q_K_Q, dim1=-2, dim2=-1)  # (B, 4N)
 
             # Eigenvector factors are Q_K_Q / denom
             evec_factor = Q_K_Q.transpose(-2, -1) / denom  # (B, 4N, 4N)
 
             # (B, 4N, 4N) @ (B, 4N, 4N) is a batched matrix product
-            Q_diff = torch.matmul(Q, evec_factor)
+            # Currently the most time-consuming part of the loop. Look into speedups
+
+            Q_diff = torch.matmul(Q, evec_factor)  # (B, 4N, 4N)
 
             dx = self.consistency(L + L_diff, Q + Q_diff) - x0
             self._grad[:, n] = dx / eps
 
-
     def forward(self, x: torch.Tensor):
         # Do batched diagonalisation, one for each k-mode
-
+        print("Diagonalizing...")
         start = time.time()
         L, Q = torch.linalg.eigh(self.matrix(x))
         delta_0 = self.consistency(L, Q)
@@ -224,9 +250,7 @@ class DenseBDGSolver(torch.nn.Module):
 
         print(mid - start, end - mid)
 
-
         return delta_0
-
 
         # TODO: Show equivalency between upper and lower equations
         # return self.kmode_weights @ torch.sum(
@@ -269,7 +293,7 @@ class DenseBDGSolver(torch.nn.Module):
         res = newton(self, x0, verbose=True)
 
         print(res.numpy())
-        assert(False)
+        assert False
 
         # res = broydenB2(self.zero_func, x0, verbose=True, eps=1e-5)
         print(f"Elapsed: {time.time() - before}")
