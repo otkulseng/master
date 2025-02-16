@@ -157,92 +157,18 @@ class DenseBDGSolver(torch.nn.Module):
             L, Q, self.potential_indices, self.beta, self.potential
         )
 
-    # def calculate_gradient(self, L: torch.Tensor, Q: torch.Tensor, x0: torch.Tensor):
-    #     pass
-    def calculate_gradient(self, L: torch.Tensor, Q: torch.Tensor, x0: torch.Tensor):
-
-        self._grad =(self.kmode_weights.view(-1, 1, 1) *
-            eigenvalue_perturbation_gradient(
+    def calculate_gradient(self, L: torch.Tensor, Q: torch.Tensor, T: torch.Tensor):
+        self._grad = (
+            self.kmode_weights.view(-1, 1, 1)
+            * eigenvalue_perturbation_gradient(
                 L,
                 Q,
                 self.potential_indices,
-                self.beta,
-                self.potential,
+                Beta= 1.0 / (1e-15 + T),
+                Potential=self.potential,
             )
         ).sum(0)  # (B, N, N)
-
-
-    def calculate_gradient_gfdfg(
-        self, L: torch.Tensor, Q: torch.Tensor, x0: torch.Tensor
-    ):
-        """_summary_
-
-        Args:
-            L (torch.Tensor): (B, 4N)
-            Q (torch.Tensor): (B, 4N, 4N)
-            x0 (torch.Tensor): nnz
-        """
-        print("Entered gradient")
-        eps = 1e-8
-        K = eps * torch.tensor(
-            [
-                [0, 0, 0, 1],
-                [0, 0, -1, 0],
-                [0, -1, 0, 0],
-                [1, 0, 0, 0],
-            ],
-            dtype=torch.complex128,
-        )
-        B, size = L.shape
-        N = size // 4
-
-        Q_b = Q.transpose(-1, -2)  # Now, L[b, n] correspond to vector Q[b, n, :]
-
-        # (Batch, Eigenvalues, Position, Nambu)
-        Q_b = Q_b.view(B, 4 * N, N, 4)
-
-        # Remove all unnecessary blocks.
-        # Resulting
-        Q_b = Q_b[:, :, self.potential_indices, :]  # (B, 4N, nnz, 4)
-
-        Q_b = Q_b.transpose(1, 2)  # (B, nnz, 4N, 4)
-
-        print("Performing outer block multiplication")
-        K_Q = torch.matmul(Q_b, K.view(1, 1, 4, 4))  # shape (B, nnz, 4N, 4)
-
-        # Now, would like to do Q^T K_Q. However, this would result in
-        # tensor of shape (B, N, 4N, 4N) which is prohibitively large.
-        # Instead, loop over N and do this sequentially. Function
-        # is scripted, so should not be too bad
-        # TODO: script
-        # TODO: Consider whether a batched (say 10 at a time) approach is feasible here.
-
-        # Transpose for ease of multiplication
-        Q_b = Q_b.transpose(-2, -1)  # (B, nnz, 4, 4N)
-        # Eigenvalue denominator equal. Set zero-elements to inf for well-definedness
-        denom = L.unsqueeze(-2) - L.unsqueeze(-1)  # (B, 4N, 4N)
-        denom = torch.where(
-            denom.abs() < 1e-10, torch.inf, denom
-        )  # Zeros out contributions in this case
-
-        for n in range(K_Q.size(1)):
-            # Numerator in eigenvalue perturbation
-
-            Q_K_Q = torch.matmul(K_Q[:, n, :, :], Q_b[:, n, :, :])  # (B, 4N, 4N)
-
-            # Change in eigenvalues on the diagonal
-            L_diff = torch.diagonal(Q_K_Q, dim1=-2, dim2=-1)  # (B, 4N)
-
-            # Eigenvector factors are Q_K_Q / denom
-            evec_factor = Q_K_Q.transpose(-2, -1) / denom  # (B, 4N, 4N)
-
-            # (B, 4N, 4N) @ (B, 4N, 4N) is a batched matrix product
-            # Currently the most time-consuming part of the loop. Look into speedups
-
-            Q_diff = torch.matmul(Q, evec_factor)  # (B, 4N, 4N)
-
-            dx = self.consistency(L + L_diff, Q + Q_diff) - x0
-            self._grad[:, n] = dx / eps
+        return self._grad
 
     def forward(self, x: torch.Tensor):
         # Do batched diagonalisation, one for each k-mode
@@ -256,7 +182,7 @@ class DenseBDGSolver(torch.nn.Module):
         print("Starting gradient")
 
         # Use eigenvalue perturbation to calculate the gradient
-        self.calculate_gradient(L, Q, delta_0)
+        self.calculate_gradient(L, Q, self.temperature)
 
         end = time.time()
 
@@ -272,6 +198,30 @@ class DenseBDGSolver(torch.nn.Module):
         #     / 2,
         #     dim=1,
         # )
+
+    def critical_temperature(self, eps=1e-3):
+        L, Q = torch.linalg.eigh(
+            self.matrix(torch.zeros_like(self.potential).to(torch.complex128))
+        )
+
+        minval = torch.tensor(0.0)
+        maxval = torch.tensor(1.0)
+
+        while (maxval - minval) > eps:
+            t = (maxval + minval) / 2
+
+            rho = torch.linalg.norm(self.calculate_gradient(L, Q, t), ord=2)
+
+            print(f"{rho.item()}, {minval.item()}, {maxval.item()}")
+
+            if rho < 1:
+                maxval = t
+            else:
+                minval = t
+
+
+
+
 
     def free_energy(self, x: torch.Tensor):
         # The gradient obtained using eigvalsh is always numerically stable,
@@ -292,7 +242,6 @@ class DenseBDGSolver(torch.nn.Module):
 
         # Final result
         return E0 + H0 - self.temperature * S
-
 
     def condensation_energy(self, x: torch.Tensor):
         return self.free_energy(x) - self.free_energy(torch.zeros_like(x))

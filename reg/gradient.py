@@ -51,8 +51,7 @@ def eigenvalue_perturbation_gradient(
         Q (torch.Tensor): _description_
         Idx (torch.Tensor): _description_
     """
-
-    K =  torch.tensor(
+    K = torch.tensor(
         [
             [0, 0, 0, 1],
             [0, 0, -1, 0],

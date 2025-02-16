@@ -106,7 +106,7 @@ class PotentialHamiltonian:
             kmodes=torch.tensor(kmodes),
             cosine_threshold=cosine_epsilon
         )
-        return solver.solve()
+        return solver
 
     # def matrix(self):
     #     indices, blocks = self._matrix.to_tensor()
@@ -123,26 +123,29 @@ class PotentialHamiltonian:
 import matplotlib.pyplot as plt
 import time
 def main():
-    lat = CubicLattice((200, 1, 1))
+    lat = CubicLattice((100, 1, 1))
     ham = PotentialHamiltonian(lat)
     with ham as (H, V):
         for i in tqdm(lat.sites()):
             x, _, _ = i
             H[i, i] = -0.1 * sigma0
 
-            if x < 100:
+            if x < 50:
                 V[i, i] = -1.0
 
         for i, j in tqdm(lat.bonds()):
             H[i, j] = -1.0 * sigma0
 
-    x0 = ham.solve(
-        0.0, #between 0.25 and 0.275
+    minval, maxval = 0.025390625, 0.02734375
+    solver = ham.solve(
+        maxval, #between 0.25 and 0.275
         kmodes=[200]
-    )
+    ).solve()
+    # solver.critical_temperature()
 
-    plt.plot(x0)
-    plt.show()
+
+    # plt.plot(x0)
+    # plt.show()
 
 if __name__ == "__main__":
     main()
