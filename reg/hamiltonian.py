@@ -106,19 +106,7 @@ class PotentialHamiltonian:
             kmodes=torch.tensor(kmodes),
             cosine_threshold=cosine_epsilon
         )
-
-        # func = torch.compile(solver.zero_func) NOTE: Does not support complex numbers
-
-        before = time.time()
-
-
-        x0 = torch.zeros_like(V_potential).to(torch.complex128)
-        x0[0] = 1.0
-
-        res = broydenB2(solver.zero_func, x0, verbose=True, eps=1e-5)
-        print(f'Elapsed: {time.time() - before}')
-
-        return idct(res).numpy()
+        return solver.solve()
 
     # def matrix(self):
     #     indices, blocks = self._matrix.to_tensor()
@@ -135,27 +123,24 @@ class PotentialHamiltonian:
 import matplotlib.pyplot as plt
 import time
 def main():
-    lat = CubicLattice((100, 1, 1))
+    lat = CubicLattice((50, 1, 1))
     ham = PotentialHamiltonian(lat)
     with ham as (H, V):
         for i in tqdm(lat.sites()):
             x, _, _ = i
-            H[i, i] = -0.2 * sigma0
-            if x < 50:
-                V[i, i] = -0.6
+            H[i, i] = -0.1 * sigma0
+            V[i, i] = -0.8
 
         for i, j in tqdm(lat.bonds()):
             H[i, j] = -1.0 * sigma0
 
     x0 = ham.solve(
-        0.0,
-        kmodes=[100],
-        cosine_epsilon=1e-3
+        0.0, #between 0.25 and 0.275
+        kmodes=[50]
     )
 
-    plt.plot(np.real(x0))
-    plt.savefig("temp.pdf")
-
+    plt.plot(x0)
+    plt.show()
 
 if __name__ == "__main__":
     main()

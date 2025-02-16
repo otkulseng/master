@@ -1,5 +1,7 @@
 import torch
 
+from scipy.optimize import approx_fprime
+import numpy as np
 
 def broydenB2(
     f,
@@ -117,3 +119,54 @@ def broydenB1(
         f0 = f1
 
     return best_x
+
+def newton(
+    f,
+    x0,
+    max_iter=100,
+    eps=1e-10,
+    verbose=False,
+    rel_eps=1e-10,
+    x_norm=1e-10,
+):
+
+    best_norm = torch.inf
+
+    for it in range(max_iter):
+        f0 = f.eval(x0)
+
+        current_norm = torch.max(torch.abs(f0))
+        rel_change = torch.max(torch.abs(f0) / (1e-15 + torch.abs(x0)))
+
+        if current_norm < best_norm:
+            best_norm = current_norm
+            best_x = torch.clone(x0)
+
+        if verbose:
+            print(
+                f"It: {it}\t norm: {current_norm}\t rel: {rel_change}\t mid: {torch.mean(torch.abs(x0))}"
+            )
+
+        if current_norm < eps:
+            break
+
+        if rel_change < rel_eps:
+            break
+
+        if torch.max(torch.abs(best_x)) < x_norm:
+            break
+
+        # gr = torch.clone(f.grad(x0)).real
+        # def inner(x):
+        #     x = torch.tensor(np.real(x)).to(torch.complex128)
+        #     return torch.real(f.eval(x)).numpy()
+        # jac = approx_fprime(x0, inner)
+        # # Perform newton step
+        # print(gr)
+        # print(jac)
+        # assert(False)
+
+        x0 = x0 + torch.linalg.solve(f.grad(x0), -f0)
+    return best_x
+
+

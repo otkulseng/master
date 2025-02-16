@@ -1,5 +1,7 @@
 import torch
-from dct import dct, idct, dst, idst
+from dct import dct, idct
+import time
+from optimization import broydenB2, newton
 
 
 class DenseBDGSolver(torch.nn.Module):
@@ -46,13 +48,17 @@ class DenseBDGSolver(torch.nn.Module):
         # K modes is a up to 3d list of diagonal entries
         freqs = [2 * torch.cos(2 * torch.pi * torch.fft.fftfreq(N)) for N in kmodes]
 
-        mesh: list[torch.Tensor] = list(torch.meshgrid(freqs, indexing="ij"))
-        kmodes = torch.stack(mesh, dim=0)
-        kmodes = kmodes.sum(dim=0).reshape(-1)
+        if len(freqs) > 0:
+            mesh: list[torch.Tensor] = list(torch.meshgrid(freqs, indexing="ij"))
+            kmodes = torch.stack(mesh, dim=0)
+            kmodes = kmodes.sum(dim=0).reshape(-1)
 
-        unique_elements, counts = torch.unique(kmodes, return_counts=True)
-        self.kmode_weights = (counts / kmodes.shape[0]).to(torch.complex128)
-        self.kmodes = unique_elements
+            unique_elements, counts = torch.unique(kmodes, return_counts=True)
+            self.kmode_weights = (counts / kmodes.shape[0]).to(torch.complex128)
+            self.kmodes = unique_elements
+        else:
+            self.kmode_weights = torch.tensor([1], dtype=torch.complex128)
+            self.kmodes = torch.tensor([0], dtype=torch.complex128)
 
         print(f"Number of unique k modes: {self.kmode_weights.shape}")
 
@@ -61,16 +67,28 @@ class DenseBDGSolver(torch.nn.Module):
 
         self.cosine_threshold = cosine_threshold
 
+        self._L = None
+        self._Q = None
+        self._grad = torch.zeros((self.potential.numel(), self.potential.numel()), dtype=torch.complex128)
+
+
+    def grad(self, x: torch.Tensor, eps: float = 1e-5):
+        return self._grad  - torch.eye(x.numel(), dtype=torch.complex128)
+
+    def eval(self, x: torch.Tensor):
+        return self.zero_func(x)
+
     # @torch.jit.script_m
     def zero_func(self, x: torch.Tensor):
         # X are cosine wave coefficients. Expand using inverse discrete cosine transform
-        signal = idct(x)
-        res = self.forward(signal)
-        res_x = dct(res)
+        # signal = idct(x)
+        # res = self.forward(signal)
+        # res_x = dct(res)
 
-        # Keep only cosine modes that fall above some predefined threshold
-        threshold = self.cosine_threshold * res_x.abs().mean().item()
-        res_x[res_x.abs() < threshold] = 0.0
+        # # Keep only cosine modes that fall above some predefined threshold
+        # threshold = self.cosine_threshold * res_x.abs().mean().item()
+        # res_x[res_x.abs() < threshold] = 0.0
+        res_x = self.forward(x)
         return res_x - x
 
     def insert_deltas(self, x: torch.Tensor):
@@ -94,12 +112,11 @@ class DenseBDGSolver(torch.nn.Module):
     def matrix(self, x: torch.Tensor):
         return self.insert_kmodes(self.insert_deltas(x))
 
-    def forward(self, x: torch.Tensor):
-        # Do batched diagonalisation, one for each k-mode
 
-        L, Q = torch.linalg.eigh(self.matrix(x))
-
-        # Keep only positive
+    def consistency(self, L: torch.Tensor, Q: torch.Tensor):
+        # Keep only positive eigenvalues
+        L = torch.real(L)
+        Q = Q.to(torch.complex128)
         mask = L > 0
 
         # L: (num_batches, 2N) positive eigenvalues
@@ -108,21 +125,118 @@ class DenseBDGSolver(torch.nn.Module):
         # Q: (num_batches, 2N, N, 4) == (num_batches, eigenvalues, position, Nambu)
         Q = Q.transpose(-2, -1)[mask].view(L.shape[0], L.shape[1], -1, 4)
         Q = Q[:, :, self.potential_indices, :]  # (n_b, E, pos, N)
-        uup = Q[:, :, :, 0]  # (num_batches, eigenvalues, position)
-        udo = Q[:, :, :, 1]
-        vup = Q[:, :, :, 2]
-        vdo = Q[:, :, :, 3]
+
+        # # Store for gradient
+        # self._L = torch.clone(L)
+        # self._Q = torch.clone(Q)
+
+        # uup: torch.Tensor = Q[:, :, :, 0]  # (num_batches, eigenvalues, position)
+        udo: torch.Tensor = Q[:, :, :, 1]
+        vup: torch.Tensor = Q[:, :, :, 2]
+        # vdo: torch.Tensor = Q[:, :, :, 3] # (num_batches, eigenvalues, position)
         tanhe = torch.tanh(self.beta * L / 2)
 
         return self.kmode_weights @ torch.sum(
-            (udo.conj() * vup - uup.conj() * vdo)
-            * self.potential.view(1, 1, -1)
-            * tanhe.unsqueeze(-1)
-            / 2,
+            (udo.conj() * vup) * self.potential.view(1, 1, -1) * tanhe.unsqueeze(-1),
             dim=1,
         )
 
+    def calculate_gradient(self, L: torch.Tensor, Q: torch.Tensor, x0: torch.Tensor):
+        eps = 1e-8
+        K = eps * torch.tensor(
+            [
+                [0, 0, 0, 1],
+                [0, 0, -1, 0],
+                [0, -1, 0, 0],
+                [1, 0, 0, 0],
+            ],
+            dtype=torch.complex128,
+        )
+        B, size = L.shape
+        N = size // 4
+
+        # # These indices must change when not entire matrix is for deltas
+        block_idx = torch.arange(size).view(N, 4)  # shape (N,4)
+    # Expand to batch: (B, N, 4)
+        block_idx = block_idx.unsqueeze(0).expand(B, N, 4)
+        # Reshape to (B, 4N) because 4N = N*4.
+        block_idx = block_idx.reshape(B, size)  # shape (B, 4N)
+        # Now, use gather along dimension 1. Q has shape (B, 4N, 4N), so we need indices of shape (B, 4N, 1)
+        Q_gathered = torch.gather(Q, 1, block_idx.unsqueeze(-1).expand(B, size, size))
+        # Reshape Q_gathered to (B, N, 4, 4N)
+        Q_b = Q_gathered.view(B, N, 4, size)
+
+
+        # print(Q.shape, indices.shape)'
+        # assert(False)
+        # # Step 1, gather the blocks from Q that have non-trivial products with K
+        # Q_b = torch.gather(Q.unsqueeze(1), 1, indices)  # shape (B, N, 4, 4N)
+
+        # Step 2, perform the actual multiplication
+        K_Q = torch.matmul(K.view(1, 1, 4, 4), Q_b)  # shape (B, N, 4, 4N)
+
+        # Now, would like to do Q^T K_Q. However, this would result in
+        # tensor of shape (B, N, 4N, 4N) which is prohibitively large.
+        # Instead, loop over N and do this sequentially. Function
+        # is scripted, so should not be too bad
+        # TODO: Consider whether a batched (say 10 at a time) approach is feasible here.
+
+        # Transpose for ease of multiplication
+        Q_b = Q_b.transpose(-2, -1)  # (B, N, 4N, 4)
+        # Eigenvalue denominator equal. Set zero-elements to inf for well-definedness
+        denom = L.unsqueeze(-2) - L.unsqueeze(-1)  # (B, 4N, 4N)
+        denom = torch.where(
+            denom.abs() < 1e-10, torch.inf, denom
+        )  # Zeros out contributions in this case
+
+        for n in range(N):
+            Q_K_Q = torch.matmul(Q_b[:, n, :, :], K_Q[:, n, :, :])  # (B, 4N, 4N)
+
+            # # Change in eigenvalues on the diagonal
+            L_diff = torch.diagonal(Q_K_Q, dim1=-2, dim2=-1)  # (B, 4N)
+
+            # Eigenvector factors are Q_K_Q / denom
+            evec_factor = Q_K_Q.transpose(-2, -1) / denom  # (B, 4N, 4N)
+
+            # (B, 4N, 4N) @ (B, 4N, 4N) is a batched matrix product
+            Q_diff = torch.matmul(Q, evec_factor)
+
+            dx = self.consistency(L + L_diff, Q + Q_diff) - x0
+            self._grad[:, n] = dx / eps
+
+
+    def forward(self, x: torch.Tensor):
+        # Do batched diagonalisation, one for each k-mode
+
+        start = time.time()
+        L, Q = torch.linalg.eigh(self.matrix(x))
+        delta_0 = self.consistency(L, Q)
+
+        mid = time.time()
+
+        # Use eigenvalue perturbation to calculate the gradient
+        self.calculate_gradient(L, Q, delta_0)
+
+        end = time.time()
+
+        print(mid - start, end - mid)
+
+
+        return delta_0
+
+
+        # TODO: Show equivalency between upper and lower equations
+        # return self.kmode_weights @ torch.sum(
+        #     (udo.conj() * vup - uup.conj() * vdo)
+        #     * self.potential.view(1, 1, -1)
+        #     * tanhe.unsqueeze(-1)
+        #     / 2,
+        #     dim=1,
+        # )
+
     def free_energy(self, x: torch.Tensor):
+        # The gradient obtained using eigvalsh is always numerically stable,
+        # as opposed to the ones obtained using eigh.
         evals = torch.linalg.eigvalsh(self.matrix(x))
 
         # Only the positive eigenvalues contribute to the calculation
@@ -132,16 +246,29 @@ class DenseBDGSolver(torch.nn.Module):
         E0 = torch.dot(x.conj(), x / self.potential)
 
         # Non-entropic contribution
-        H0 = - 1 / 2 * torch.sum(evals)
+        H0 = -1 / 2 * torch.sum(evals)
 
         # Entropy
-        S = torch.sum(torch.log(1 + torch.exp(- self.beta * evals)))
+        S = torch.sum(torch.log(1 + torch.exp(-self.beta * evals)))
 
         # Final result
         return E0 + H0 - self.temperature * S
+
     def condensation_energy(self, x: torch.Tensor):
         return self.free_energy(x) - self.free_energy(torch.zeros_like(x))
 
+    def solve(self, return_corr: bool = False):
+        before = time.time()
 
+        x0 = torch.ones_like(self.potential).to(torch.complex128)
+        # x0[0] = 1.0
 
+        res = newton(self, x0, verbose=True)
 
+        print(res.numpy())
+        assert(False)
+
+        # res = broydenB2(self.zero_func, x0, verbose=True, eps=1e-5)
+        print(f"Elapsed: {time.time() - before}")
+        return res.numpy()
+        return idct(res).numpy()
