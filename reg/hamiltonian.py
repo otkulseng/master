@@ -123,20 +123,21 @@ class PotentialHamiltonian:
 import matplotlib.pyplot as plt
 import time
 def main():
-    lat = CubicLattice((50, 1, 1))
+    lat = CubicLattice((4, 1, 1))
     ham = PotentialHamiltonian(lat)
     with ham as (H, V):
         for i in tqdm(lat.sites()):
             x, _, _ = i
             H[i, i] = -0.1 * sigma0
-            V[i, i] = -0.8
+            if x < 3:
+                V[i, i] = -2.0
 
         for i, j in tqdm(lat.bonds()):
             H[i, j] = -1.0 * sigma0
 
     x0 = ham.solve(
         0.0, #between 0.25 and 0.275
-        kmodes=[50]
+        kmodes=[2]
     )
 
     plt.plot(x0)

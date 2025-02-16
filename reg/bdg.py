@@ -142,7 +142,14 @@ class DenseBDGSolver(torch.nn.Module):
         )
 
     def calculate_gradient(self, L: torch.Tensor, Q: torch.Tensor, x0: torch.Tensor):
-        eps = 1e-8
+        """_summary_
+
+        Args:
+            L (torch.Tensor): (B, 4N)
+            Q (torch.Tensor): (B, 4N, 4N)
+            x0 (torch.Tensor): nnz
+        """
+        eps = 1e-6
         K = eps * torch.tensor(
             [
                 [0, 0, 0, 1],
@@ -155,42 +162,38 @@ class DenseBDGSolver(torch.nn.Module):
         B, size = L.shape
         N = size // 4
 
-        # # These indices must change when not entire matrix is for deltas
-        block_idx = torch.arange(size).view(N, 4)  # shape (N,4)
-    # Expand to batch: (B, N, 4)
-        block_idx = block_idx.unsqueeze(0).expand(B, N, 4)
-        # Reshape to (B, 4N) because 4N = N*4.
-        block_idx = block_idx.reshape(B, size)  # shape (B, 4N)
-        # Now, use gather along dimension 1. Q has shape (B, 4N, 4N), so we need indices of shape (B, 4N, 1)
-        Q_gathered = torch.gather(Q, 1, block_idx.unsqueeze(-1).expand(B, size, size))
-        # Reshape Q_gathered to (B, N, 4, 4N)
-        Q_b = Q_gathered.view(B, N, 4, size)
+        Q_b = Q.transpose(-1, -2) # Now, L[b, n] correspond to vector Q[b, n, :]
+
+        # (Batch, Eigenvalues, Position, Nambu)
+        Q_b = Q_b.view(B, 4*N, N, 4)
+
+        # Remove all unnecessary blocks.
+        # Resulting
+        Q_b = Q_b[:, :, self.potential_indices, :] # (B, 4N, nnz, 4)
+
+        Q_b = Q_b.transpose(1, 2) # (B, nnz, 4N, 4)
+
+        K_Q = torch.matmul(Q_b, K.view(1, 1, 4, 4) )  # shape (B, nnz, 4N, 4)
 
 
-        # print(Q.shape, indices.shape)'
-        # assert(False)
-        # # Step 1, gather the blocks from Q that have non-trivial products with K
-        # Q_b = torch.gather(Q.unsqueeze(1), 1, indices)  # shape (B, N, 4, 4N)
-
-        # Step 2, perform the actual multiplication
-        K_Q = torch.matmul(K.view(1, 1, 4, 4), Q_b)  # shape (B, N, 4, 4N)
 
         # Now, would like to do Q^T K_Q. However, this would result in
         # tensor of shape (B, N, 4N, 4N) which is prohibitively large.
         # Instead, loop over N and do this sequentially. Function
         # is scripted, so should not be too bad
+        # TODO: script
         # TODO: Consider whether a batched (say 10 at a time) approach is feasible here.
 
         # Transpose for ease of multiplication
-        Q_b = Q_b.transpose(-2, -1)  # (B, N, 4N, 4)
+        Q_b = Q_b.transpose(-2, -1)  # (B, nnz, 4, 4N)
         # Eigenvalue denominator equal. Set zero-elements to inf for well-definedness
         denom = L.unsqueeze(-2) - L.unsqueeze(-1)  # (B, 4N, 4N)
         denom = torch.where(
             denom.abs() < 1e-10, torch.inf, denom
         )  # Zeros out contributions in this case
 
-        for n in range(N):
-            Q_K_Q = torch.matmul(Q_b[:, n, :, :], K_Q[:, n, :, :])  # (B, 4N, 4N)
+        for n in range(K_Q.size(1)):
+            Q_K_Q = torch.matmul(K_Q[:, n, :, :], Q_b[:, n, :, :])  # (B, 4N, 4N)
 
             # # Change in eigenvalues on the diagonal
             L_diff = torch.diagonal(Q_K_Q, dim1=-2, dim2=-1)  # (B, 4N)
