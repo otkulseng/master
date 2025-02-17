@@ -122,7 +122,7 @@ class PotentialHamiltonian:
 import matplotlib.pyplot as plt
 import time
 def main():
-    Nfm = np.arange(20)
+    Nfm = [20]
     Nsc = 20
     results = []
 
@@ -137,8 +137,7 @@ def main():
                 if x < Nsc:
                     V[i, i] = -1.0
                 else:
-                    matr += 0.3 * sigma1
-
+                    matr += 0.3 * sigma2
                 H[i, i] = matr
 
             for i, j in tqdm(lat.bonds()):
@@ -148,15 +147,19 @@ def main():
             kmodes=[250]
         )
 
-        maxval = 1.0
-        if len(results) > 0:
-            maxval = results[0]
+        res = solver.solve(0.0)
+        plt.plot(res)
+        plt.savefig("temp.pdf")
 
-        results.append(solver.critical_temperature(eps=1e-3, maxval=maxval))
+    #     maxval = 1.0
+    #     if len(results) > 0:
+    #         maxval = results[0]
 
-    plt.plot(Nfm, results)
-    plt.savefig("crittemp.pdf")
-    # solver.critical_temperature()
+    #     results.append(solver.critical_temperature(eps=1e-3, maxval=maxval))
+
+    # plt.plot(Nfm, results)
+    # plt.savefig("crittemp.pdf")
+    # # solver.critical_temperature()
 
 
     # plt.plot(x0)
