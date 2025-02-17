@@ -6,6 +6,8 @@ from optimization import broydenB2, newton
 import matplotlib.pyplot as plt
 from gradient import eigenvalue_perturbation_gradient, batch_consistency
 
+from scipy.sparse.csgraph import connected_components
+import scipy.sparse as sp
 
 class DenseBDGSolver(torch.nn.Module):
     def __init__(
@@ -14,7 +16,6 @@ class DenseBDGSolver(torch.nn.Module):
         H_blocks: torch.Tensor,
         V_indices: torch.Tensor,
         V_potential: torch.Tensor,
-        temperature: torch.Tensor,
         kmodes: list[int],
         cosine_threshold: float = 1e-3,
     ):
@@ -44,9 +45,6 @@ class DenseBDGSolver(torch.nn.Module):
 
         self.potential_rows = 4 * V_row[:, None] + torch.arange(2)
         self.potential_cols = 4 * V_col[:, None] + torch.arange(2) + 2
-
-        self.temperature = temperature
-        self.beta = 1.0 / (1e-15 + self.temperature)
 
         # K modes is a up to 3d list of diagonal entries
         freqs = [2 * torch.cos(2 * torch.pi * torch.fft.fftfreq(N)) for N in kmodes]
@@ -116,42 +114,6 @@ class DenseBDGSolver(torch.nn.Module):
     def matrix(self, x: torch.Tensor):
         return self.insert_kmodes(self.insert_deltas(x))
 
-    def consistency_v0(self, L: torch.Tensor, Q: torch.Tensor):
-        L = torch.real(L)
-
-        B = L.shape[0]
-        size = L.shape[1]
-        N = size // 4
-
-        Q = Q.to(torch.complex128)
-        Q = Q.transpose(-2, -1).view(L.shape[0], L.shape[1], -1, 4)  # (B, 4N, N, 4)
-
-        # Keep only positive eigenvalues
-        mask = L > 0
-        Q = Q[mask].view(B, 2 * N, N, 4)
-
-        # L: (num_batches, 2N) positive eigenvalues
-        L = L[mask].view(Q.shape[0], -1)
-
-        # Q: (num_batches, 2N, N, 4) == (num_batches, eigenvalues, position, Nambu)
-        Q = Q[:, :, self.potential_indices, :]  # (B, 2N, nnz, 4)
-
-        # # Store for gradient
-        # self._L = torch.clone(L)
-        # self._Q = torch.clone(Q)
-
-        # uup: torch.Tensor = Q[:, :, :, 0]  # (num_batches, eigenvalues, position)
-        udo: torch.Tensor = Q[:, :, :, 1]
-        vup: torch.Tensor = Q[:, :, :, 2]
-        # vdo: torch.Tensor = Q[:, :, :, 3] # (num_batches, eigenvalues, position)
-        tanhe = torch.tanh(self.beta * L / 2)
-
-        res = self.kmode_weights @ torch.sum(
-            (udo.conj() * vup) * tanhe.unsqueeze(-1),
-            dim=1,
-        )
-        return self.potential * res
-
     def consistency(self, L: torch.Tensor, Q: torch.Tensor):
         return self.kmode_weights @ batch_consistency(
             L, Q, self.potential_indices, self.beta, self.potential
@@ -198,16 +160,52 @@ class DenseBDGSolver(torch.nn.Module):
         #     / 2,
         #     dim=1,
         # )
+    def block_diagonalize(self, matrix: torch.Tensor):
+        B, N, N = matrix.shape
 
-    def critical_temperature(self, eps=1e-3):
+        mask = torch.where(matrix[0].abs() > 0, 1, 0).numpy()
+        csgraph = sp.coo_array(mask)
+
+        num_blocks, labels = connected_components(csgraph=csgraph, directed=False)
+        if num_blocks == 1:
+            # Default to regular in the case of no blocks
+            return torch.linalg.eigh(matrix)
+
+
+        indices = torch.arange(N)
+        blocks = [indices[labels==i] for i in range(num_blocks)]
+
+        new_matrix = torch.stack([
+            matrix[:, blk.unsqueeze(-1), blk.unsqueeze(-2)] for blk in blocks
+        ], dim=1).to(matrix.dtype)
+
+        print(new_matrix.shape, matrix.shape)
+
+        L, Q = torch.linalg.eigh(new_matrix)
+        return L, Q
+
+
+
+
+
+    def critical_temperature(self, minval=0.0, maxval=1.0, eps=1e-3):
+        matr = self.matrix(torch.zeros_like(self.potential.to(torch.complex128)))
+
+
+        L, Q = self.block_diagonalize(matr)
+
+        return L.abs().sum()
+        assert(False)
+
+
         L, Q = torch.linalg.eigh(
-            self.matrix(torch.zeros_like(self.potential).to(torch.complex128))
+            matr
         )
 
-        minval = torch.tensor(0.0)
-        maxval = torch.tensor(1.0)
+        minval = torch.tensor(minval)
+        maxval = torch.tensor(maxval)
 
-        while (maxval - minval) > eps:
+        while (maxval - minval) / (maxval + minval) > eps:
             t = (maxval + minval) / 2
 
             rho = torch.linalg.norm(self.calculate_gradient(L, Q, t), ord=2)
@@ -218,9 +216,7 @@ class DenseBDGSolver(torch.nn.Module):
                 maxval = t
             else:
                 minval = t
-
-
-
+        return (maxval + minval).item() / 2
 
 
     def free_energy(self, x: torch.Tensor):
@@ -246,8 +242,11 @@ class DenseBDGSolver(torch.nn.Module):
     def condensation_energy(self, x: torch.Tensor):
         return self.free_energy(x) - self.free_energy(torch.zeros_like(x))
 
-    def solve(self, return_corr: bool = False):
+    def solve(self, temperature: float):
         before = time.time()
+
+        self.temperature = torch.tensor(temperature)
+        self.beta = 1.0 / (1e-15 + self.temperature)
 
         x0 = torch.ones_like(self.potential).to(torch.complex128)
         # x0[0] = 1.0

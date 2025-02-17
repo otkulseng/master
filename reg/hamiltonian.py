@@ -90,7 +90,7 @@ class PotentialHamiltonian:
     def __exit__(self, exc_type, exc_val, exc_tb):
         pass
 
-    def solve(self, temperature: float, kmodes: Union[int, Iterable[int]] = [], cosine_epsilon=1e-3):
+    def solve(self, kmodes: Union[int, Iterable[int]] = [], cosine_epsilon=1e-3):
         if isinstance(kmodes, int):
             kmodes = [kmodes]
 
@@ -102,7 +102,6 @@ class PotentialHamiltonian:
             H_blocks,
             V_indices,
             V_potential,
-            temperature=torch.tensor(temperature),
             kmodes=torch.tensor(kmodes),
             cosine_threshold=cosine_epsilon
         )
@@ -123,24 +122,40 @@ class PotentialHamiltonian:
 import matplotlib.pyplot as plt
 import time
 def main():
-    lat = CubicLattice((100, 1, 1))
-    ham = PotentialHamiltonian(lat)
-    with ham as (H, V):
-        for i in tqdm(lat.sites()):
-            x, _, _ = i
-            H[i, i] = -0.1 * sigma0
+    Nfm = np.arange(20)
+    Nsc = 100
+    results = []
 
-            if x < 50:
-                V[i, i] = -1.0
+    for n in tqdm(Nfm):
+        lat = CubicLattice((int(Nsc + n), 1, 1))
+        ham = PotentialHamiltonian(lat)
+        with ham as (H, V):
+            for i in tqdm(lat.sites()):
+                x, _, _ = i
+                matr = - 0.01 * sigma0
 
-        for i, j in tqdm(lat.bonds()):
-            H[i, j] = -1.0 * sigma0
+                if x < Nsc:
+                    V[i, i] = -0.6
+                else:
+                    matr += 0.3 * sigma1
 
-    minval, maxval = 0.025390625, 0.02734375
-    solver = ham.solve(
-        maxval, #between 0.25 and 0.275
-        kmodes=[200]
-    ).solve()
+                H[i, i] = matr
+
+            for i, j in tqdm(lat.bonds()):
+                H[i, j] = -1.0 * sigma0
+
+        solver = ham.solve(
+            kmodes=[250]
+        )
+
+        maxval = 0.01
+        if len(results) > 0:
+            maxval = results[0]
+
+        results.append(solver.critical_temperature(eps=1e-3, maxval=maxval))
+
+    plt.plot(Nfm, results)
+    plt.savefig("crittemp.pdf")
     # solver.critical_temperature()
 
 
