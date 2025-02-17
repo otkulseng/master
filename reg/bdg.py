@@ -9,6 +9,7 @@ from gradient import eigenvalue_perturbation_gradient, batch_consistency
 from scipy.sparse.csgraph import connected_components
 import scipy.sparse as sp
 
+
 class DenseBDGSolver(torch.nn.Module):
     def __init__(
         self,
@@ -126,7 +127,7 @@ class DenseBDGSolver(torch.nn.Module):
                 L,
                 Q,
                 self.potential_indices,
-                Beta= 1.0 / (1e-15 + T),
+                Beta=1.0 / (1e-15 + T),
                 Potential=self.potential,
             )
         ).sum(0)  # (B, N, N)
@@ -160,6 +161,7 @@ class DenseBDGSolver(torch.nn.Module):
         #     / 2,
         #     dim=1,
         # )
+
     def block_diagonalize(self, matrix: torch.Tensor):
         B, N, N = matrix.shape
 
@@ -171,35 +173,36 @@ class DenseBDGSolver(torch.nn.Module):
             # Default to regular in the case of no blocks
             return torch.linalg.eigh(matrix)
 
-
         indices = torch.arange(N)
-        blocks = [indices[labels==i] for i in range(num_blocks)]
+        blocks = [indices[labels == i] for i in range(num_blocks)]
 
-        new_matrix = torch.stack([
-            matrix[:, blk.unsqueeze(-1), blk.unsqueeze(-2)] for blk in blocks
-        ], dim=1).to(matrix.dtype)
-
-        print(new_matrix.shape, matrix.shape)
+        new_matrix = torch.stack(
+            [matrix[:, blk.unsqueeze(-1), blk.unsqueeze(-2)] for blk in blocks], dim=1
+        ).to(matrix.dtype)
 
         L, Q = torch.linalg.eigh(new_matrix)
-        return L, Q
 
+        res_L = torch.zeros(B, N).to(L.dtype)
+        res_Q = torch.zeros(B, N, N).to(Q.dtype)
 
+        for n in range(num_blocks):
+            blk = blocks[n]
+            res_L[:, blk] = L[:, n]
+            res_Q[:, blk.unsqueeze(-1), blk.unsqueeze(-2)] = Q[:, n, :, :]
 
+        # Sort L in ascending order
+        sorted_indices = torch.argsort(res_L, dim=1)
+        res_L = torch.gather(res_L, 1, sorted_indices)
+        # Sort the eigenvectors, which are located at the colums
+        res_Q = torch.gather(res_Q, -1, sorted_indices.unsqueeze(1).expand(-1, N, -1))
 
+        # print(res_L.shape, res_Q.shape)
+        # assert(False)
+        return res_L, res_Q
 
     def critical_temperature(self, minval=0.0, maxval=1.0, eps=1e-3):
-        matr = self.matrix(torch.zeros_like(self.potential.to(torch.complex128)))
-
-
-        L, Q = self.block_diagonalize(matr)
-
-        return L.abs().sum()
-        assert(False)
-
-
-        L, Q = torch.linalg.eigh(
-            matr
+        L, Q = self.block_diagonalize(
+            self.matrix(torch.zeros_like(self.potential.to(torch.complex128)))
         )
 
         minval = torch.tensor(minval)
@@ -217,7 +220,6 @@ class DenseBDGSolver(torch.nn.Module):
             else:
                 minval = t
         return (maxval + minval).item() / 2
-
 
     def free_energy(self, x: torch.Tensor):
         # The gradient obtained using eigvalsh is always numerically stable,

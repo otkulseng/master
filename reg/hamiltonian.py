@@ -123,7 +123,7 @@ import matplotlib.pyplot as plt
 import time
 def main():
     Nfm = np.arange(20)
-    Nsc = 100
+    Nsc = 20
     results = []
 
     for n in tqdm(Nfm):
@@ -135,7 +135,7 @@ def main():
                 matr = - 0.01 * sigma0
 
                 if x < Nsc:
-                    V[i, i] = -0.6
+                    V[i, i] = -1.0
                 else:
                     matr += 0.3 * sigma1
 
@@ -148,7 +148,7 @@ def main():
             kmodes=[250]
         )
 
-        maxval = 0.01
+        maxval = 1.0
         if len(results) > 0:
             maxval = results[0]
 
