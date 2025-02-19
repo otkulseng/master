@@ -10,6 +10,11 @@ from bdg import DenseBDGSolver
 from optimization import broydenB2, broydenB1
 from dct import dct, idct
 
+# from storage import store
+import storage
+import zarr
+
+
 import torch._dynamo
 torch._dynamo.config.suppress_errors = True
 class BlockReuseMatrix:
@@ -78,11 +83,37 @@ class PotentialMatrix:
 
 
 class PotentialHamiltonian:
-    def __init__(self, lat: CubicLattice):
+    def __init__(self, lat: CubicLattice, kmodes: Union[int, Iterable[int]] = []):
         self.lattice = lat
         self._matrix = BlockReuseMatrix(self.lattice)
-
         self._potential = PotentialMatrix(self.lattice)
+
+
+        if isinstance(kmodes, int):
+            kmodes = [kmodes]
+        self.kmodes = kmodes
+
+
+        # This Hamiltonian may have order parameters.
+        # Little bit of everything?
+        # All corr stored at the same place
+        # All order parameters stored at the same place
+        # data/finish/neel
+        # data/finish/SF
+
+        # Critical Temperature
+        #   Metadata
+        # Lattice
+        # Name (as a substitute for the entire matrix)
+        #
+
+        # data/finish/corr
+        # data/finish/
+        # data/finish/
+        #   corr
+        #   order
+        #
+
 
     def __enter__(self):
         return self._matrix, self._potential
@@ -90,22 +121,27 @@ class PotentialHamiltonian:
     def __exit__(self, exc_type, exc_val, exc_tb):
         pass
 
-    def solve(self, kmodes: Union[int, Iterable[int]] = [], cosine_epsilon=1e-3):
-        if isinstance(kmodes, int):
-            kmodes = [kmodes]
-
+    def solver(self):
         H_indices, H_blocks = self._matrix.to_tensor()
         V_indices, V_potential = self._potential.to_tensor()
-
-        solver = DenseBDGSolver(
+        return DenseBDGSolver(
             H_indices,
             H_blocks,
             V_indices,
             V_potential,
-            kmodes=torch.tensor(kmodes),
-            cosine_threshold=cosine_epsilon
+            kmodes=torch.tensor(self.kmodes),
         )
-        return solver
+
+
+    def critical_temperature(self):
+        return self.solver().critical_temperature()
+
+    def condensation_energy(self, x: torch.Tensor, ):
+        pass
+
+    def solve(self, temperature=0.0):
+        return self.solver().solve(temperature)
+        # return solver.solve(temperature)
 
     # def matrix(self):
     #     indices, blocks = self._matrix.to_tensor()
@@ -122,48 +158,51 @@ class PotentialHamiltonian:
 import matplotlib.pyplot as plt
 import time
 def main():
-    Nfm = [20]
-    Nsc = 20
-    results = []
+    Nfm = [50]
+    Nsc = 50
+    kmodes = [200]
+    mu = 0.1
+    pot = 1.0
+    m = 0.25
 
+    storage.new("FM")
     for n in tqdm(Nfm):
-        lat = CubicLattice((int(Nsc + n), 1, 1))
-        ham = PotentialHamiltonian(lat)
+        shape = (int(Nsc + n), 1, 1)
+
+        storage.save_kwargs(
+            name='config',
+            Nsc=Nsc,
+            Nfm = n,
+            shape=shape,
+            kmodes=kmodes,
+            mu=mu,
+            V = pot,
+            m=m
+        )
+
+        lat = CubicLattice(shape)
+        ham = PotentialHamiltonian(lat, kmodes=kmodes)
         with ham as (H, V):
             for i in tqdm(lat.sites()):
                 x, _, _ = i
-                matr = - 0.01 * sigma0
+                matr = - mu * sigma0
 
                 if x < Nsc:
-                    V[i, i] = -1.0
+                    V[i, i] = - pot
                 else:
-                    matr += 0.3 * sigma2
+                    matr += m * sigma1
                 H[i, i] = matr
 
             for i, j in tqdm(lat.bonds()):
                 H[i, j] = -1.0 * sigma0
 
-        solver = ham.solve(
-            kmodes=[250]
-        )
-
-        res = solver.solve(0.0)
-        plt.plot(res)
-        plt.savefig("temp.pdf")
-
-    #     maxval = 1.0
-    #     if len(results) > 0:
-    #         maxval = results[0]
-
-    #     results.append(solver.critical_temperature(eps=1e-3, maxval=maxval))
-
-    # plt.plot(Nfm, results)
-    # plt.savefig("crittemp.pdf")
-    # # solver.critical_temperature()
+        # T = ham.critical_temperature()
+        ham.solve(0.0)
+        # ham.crit*
 
 
-    # plt.plot(x0)
-    # plt.show()
+    storage.close()
+
 
 if __name__ == "__main__":
     main()

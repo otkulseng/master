@@ -2,6 +2,7 @@ import torch
 
 from scipy.optimize import approx_fprime
 import numpy as np
+import storage
 
 def broydenB2(
     f,
@@ -173,6 +174,9 @@ def newton(
 
 
         x0 = x0 + torch.linalg.solve(f.grad(x0), -f0)
+
+        storage.store('newton_x', x0)
+        storage.store('newton_f', f0)
     return best_x
 
 

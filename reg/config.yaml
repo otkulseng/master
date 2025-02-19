@@ -1,0 +1,8 @@
+{}
+kmodes:
+- 100
+shape: !!python/tuple
+- 40
+- 1
+- 1
+temp: 0.0

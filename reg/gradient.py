@@ -41,7 +41,7 @@ def batch_consistency(
     )
 
 
-# @torch.jit.script
+@torch.jit.script
 def eigenvalue_perturbation_gradient(
     L: torch.Tensor,
     Q: torch.Tensor,
