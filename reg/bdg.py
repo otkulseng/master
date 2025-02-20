@@ -231,6 +231,10 @@ class DenseBDGSolver(torch.nn.Module):
             print(rho)
             return rho < 1
 
+        if indicator_func(minval):
+            # Non-superconducting at minval...
+            return minval
+
         # Start in the middle
         r = 0.5
         # Go aggressively down from maxval
@@ -242,14 +246,15 @@ class DenseBDGSolver(torch.nn.Module):
             # This value of r is too big. New maximum
             rmax = r
             r = r**2
+            rmin = r
 
             print(r)
 
             if r < 1e-10:
-                return minval
+                return minval.item()
 
-        # Have now found a value of r that is too small.
-        rmin = r
+        # # Have now found a value of r that is too small.
+        # rmin = r
 
 
         new_min = minval + (maxval - minval)*rmin
@@ -262,11 +267,9 @@ class DenseBDGSolver(torch.nn.Module):
         while (maxval - minval) / (maxval + minval) > eps:
             t = (maxval + minval) / 2
 
-            rho = indicator_func(t)
-
             print(f"{minval.item()}, {maxval.item()}")
 
-            if rho < 1:
+            if indicator_func(t):
                 maxval = t
             else:
                 minval = t

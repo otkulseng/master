@@ -1,0 +1,29 @@
+Nfm: !!python/object/apply:numpy.core.multiarray.scalar
+- !!python/object/apply:numpy.dtype
+  args:
+  - i8
+  - false
+  - true
+  state: !!python/tuple
+  - 3
+  - <
+  - null
+  - null
+  - null
+  - -1
+  - -1
+  - 0
+- !!binary |
+  AQAAAAAAAAA=
+Nsc: 50
+V: 1.0
+alpha: 1.3962634015954636
+beta: 0.5235987755982988
+kmodes:
+- 200
+m: 0.25
+mu: 0.1
+shape: !!python/tuple
+- 51
+- 1
+- 1

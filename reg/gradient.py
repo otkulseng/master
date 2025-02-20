@@ -34,7 +34,8 @@ def batch_consistency(
     tanhe = torch.tanh(Beta * L / 2)
 
     return torch.sum(
-        (udo.conj() * vup - uup.conj() * vdo) / 2
+        (udo.conj() * vup - uup.conj() * vdo)
+        / 2
         * Potential.view(1, 1, -1)
         * tanhe.unsqueeze(-1),
         dim=1,
@@ -92,17 +93,23 @@ def eigenvalue_perturbation_gradient(
     Q = Q.transpose(-1, -2).view(B, 4 * N, N, 4)
     Q = Q[:, :, Idx, :]
 
-
-
     uup_0 = Q[:, -2 * N :, :, 0]
     udo_0 = Q[:, -2 * N :, :, 1]
     vup_0 = Q[:, -2 * N :, :, 2]
     vdo_0 = Q[:, -2 * N :, :, 3]
 
+    diff_E_term = (
+        Beta
+        * (udo_0.conj() * vup_0 - uup_0.conj() * vdo_0)
+        * (1 - tanhe.unsqueeze(-1) ** 2)
+        / 2
+    )
+
     out = torch.zeros((B, nnz, nnz), dtype=torch.complex128)
     for n in range(nnz):
         # Numerator in eigenvalue perturbation
-        Q_K_Q = torch.matmul(K_Q[:, n, :, :], Q_b[:, n, :, :].conj())  # (B, 4N, 4N)
+        Q_K_Q = torch.matmul(K_Q[:, n, :, :], Q_b[:, n, :, :].conj())  # (B, 2N, 4N)
+
         evec_factor = Q_K_Q / denom  # (B, 4N, 4N)
         Q_diff = torch.einsum("bij, bjkl->bikl", evec_factor, Q)
 
@@ -110,18 +117,52 @@ def eigenvalue_perturbation_gradient(
         udo_diff = Q_diff[..., 1]
         vup_diff = Q_diff[..., 2]
         vdo_diff = Q_diff[..., 3]
+        eval_diff = Q_K_Q.diagonal(dim1=-1, dim2=-2)
 
         # res = udo_0.conj() * vup_diff + udo_diff.conj() * vup_0
         # res2 = uup_0.conj() * vdo_diff + uup_diff.conj() * vdo_0
 
         out[:, :, n] = torch.sum(
             (
-                (udo_0.conj() * vup_diff + udo_diff.conj() * vup_0)
-                - (uup_0.conj() * vdo_diff + uup_diff.conj() * vdo_0)
+                (  # First part. Change due to u and v
+                    (udo_0.conj() * vup_diff + udo_diff.conj() * vup_0)
+                    - (uup_0.conj() * vdo_diff + uup_diff.conj() * vdo_0)
+                )
+                * tanhe.unsqueeze(-1)
+                + (  # Second part. Change due to eigenvalue change
+                    diff_E_term * eval_diff.unsqueeze(-1)
+                )
             )
             * Potential.view(1, 1, -1)
-            * tanhe.unsqueeze(-1) / 2,
+            / 2,
             dim=1,
         )
 
     return out
+
+
+def profile():
+    # Only import if actually use the function...
+    from torch.profiler import profile, record_function, ProfilerActivity
+
+    B = 200
+    N = 100
+    size = 4 * N
+    nnz = 80
+
+    L = torch.randn(B, size, dtype=torch.complex128)
+
+    Q = torch.randn(B, size, size, dtype=torch.complex128)
+    Idx = torch.arange(nnz)
+    Beta = torch.tensor(0.5, dtype=torch.float64)
+    Potential = torch.randn(nnz, dtype=torch.complex128)
+
+    with profile(activities=[ProfilerActivity.CPU], profile_memory=True) as prof:
+        with record_function("my_eigen_grad_block"):
+            out = eigenvalue_perturbation_gradient(L, Q, Idx, Beta, Potential)
+
+    print(prof.key_averages().table(sort_by="self_cpu_time_total", row_limit=20))
+
+
+if __name__ == "__main__":
+    profile()
