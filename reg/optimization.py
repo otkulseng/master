@@ -139,7 +139,9 @@ def newton(
     for it in range(max_iter):
         f0 = f.eval(x0) # (B, N)
 
-        current_norm = torch.max(torch.abs(f0))
+        current_norm = torch.max(torch.abs(f0), dim=-1)
+        print(current_norm)
+        assert(False)
         rel_change = torch.max(torch.abs(f0) / (1e-15 + torch.abs(x0)))
 
         if current_norm < best_norm:

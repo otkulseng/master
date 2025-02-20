@@ -36,7 +36,7 @@ class DenseBDGSolver(torch.nn.Module):
         bot_col = top_col + 2
         base_matrix[top_row.unsqueeze(-1), top_col.unsqueeze(1)] = top
         base_matrix[bot_row.unsqueeze(-1), bot_col.unsqueeze(1)] = bottom
-        self.base_matrix = base_matrix.unsqueeze(0) # (1, 4N, 4N)
+        self.base_matrix: torch.Tensor = base_matrix.unsqueeze(0) # (1, 4N, 4N)
 
         # Step 2, generate the indexing masks necessary to vectorize insertion of the deltas
         V_row = V_indices[:, 0]
@@ -98,17 +98,25 @@ class DenseBDGSolver(torch.nn.Module):
 
     def insert_deltas(self, x: torch.Tensor):
         # x is of shape (batch, N)
-        B, N = x.shape
+        x = x.expand(117, -1)
+        B, nnz = x.shape
         jsigma2 = torch.tensor([[0, 1], [-1, 0]], dtype=torch.complex128)
-        top_vals = x.view(B, N, 1, 1) * jsigma2  # (batch, N, 2, 2)
+        top_vals = x.view(B, nnz, 1, 1) * jsigma2.view(1, 1, 2, 2)  # (batch, N, 2, 2)
+
         bot_vals = top_vals.conj().transpose(-2, -1)
 
-        base_matrix = self.base_matrix
-        row = self.potential_rows
+        # base_matrix = self.base_matrix
+        row = self.potential_rows # (B, nnz,)
         col = self.potential_cols
+
+        print(row.shape, col.shape, top_vals.shape)
+        assert(False)
+        base_matrix = self.base_matrix.expand(B, -1, -1) # (B, 4N, 4N)
         base_matrix[row.unsqueeze(-1), col.unsqueeze(-2)] = top_vals
         base_matrix[col.unsqueeze(-1), row.unsqueeze(-2)] = bot_vals
 
+        print(row.shape, col.shape, base_matrix.shape )
+        assert(False)
         # Returns base_matrix of shape (B, N, N)
         return base_matrix
 
@@ -324,7 +332,8 @@ class DenseBDGSolver(torch.nn.Module):
         self.temperature = torch.tensor(temperature)
         self.beta = 1.0 / (1e-15 + self.temperature)
 
-        x0 = torch.ones_like(self.potential).to(torch.complex128)
+        # Shape (1, N) to be broadcastable to batch
+        x0 = torch.ones_like(self.potential).to(torch.complex128).unsqueeze(0)
         # x0[0] = 1.0
 
         res = newton(self, x0, verbose=True)
