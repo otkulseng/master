@@ -10,6 +10,8 @@ from scipy.sparse.csgraph import connected_components
 import scipy.sparse as sp
 
 import storage
+
+
 class DenseBDGSolver(torch.nn.Module):
     def __init__(
         self,
@@ -34,7 +36,7 @@ class DenseBDGSolver(torch.nn.Module):
         bot_col = top_col + 2
         base_matrix[top_row.unsqueeze(-1), top_col.unsqueeze(1)] = top
         base_matrix[bot_row.unsqueeze(-1), bot_col.unsqueeze(1)] = bottom
-        self.base_matrix = base_matrix
+        self.base_matrix = base_matrix.unsqueeze(0) # (1, 4N, 4N)
 
         # Step 2, generate the indexing masks necessary to vectorize insertion of the deltas
         V_row = V_indices[:, 0]
@@ -45,6 +47,9 @@ class DenseBDGSolver(torch.nn.Module):
 
         self.potential_rows = 4 * V_row[:, None] + torch.arange(2)
         self.potential_cols = 4 * V_col[:, None] + torch.arange(2) + 2
+
+        self.potential_rows = self.potential_rows.unsqueeze(0) # Batch dimension
+        self.potential_cols = self.potential_cols.unsqueeze(0) # Batch dimension
 
         # K modes is a up to 3d list of diagonal entries
         freqs = [2 * torch.cos(2 * torch.pi * torch.fft.fftfreq(N)) for N in kmodes]
@@ -63,9 +68,8 @@ class DenseBDGSolver(torch.nn.Module):
 
         print(f"Number of unique k modes: {self.kmode_weights.shape}")
 
-        self.diag_mask = torch.diag(torch.tensor([1, 1, -1, -1]).repeat(N))
+        self.diag_mask = torch.diag(torch.tensor([1, 1, -1, -1]).repeat(N)).unsqueeze(0)
         self.potential = V_potential
-
 
         self._L = None
         self._Q = None
@@ -94,8 +98,9 @@ class DenseBDGSolver(torch.nn.Module):
 
     def insert_deltas(self, x: torch.Tensor):
         # x is of shape (batch, N)
+        B, N = x.shape
         jsigma2 = torch.tensor([[0, 1], [-1, 0]], dtype=torch.complex128)
-        top_vals = x.view(-1, 1, 1) * jsigma2  # (batch, N, 2, 2)
+        top_vals = x.view(B, N, 1, 1) * jsigma2  # (batch, N, 2, 2)
         bot_vals = top_vals.conj().transpose(-2, -1)
 
         base_matrix = self.base_matrix
@@ -103,12 +108,14 @@ class DenseBDGSolver(torch.nn.Module):
         col = self.potential_cols
         base_matrix[row.unsqueeze(-1), col.unsqueeze(-2)] = top_vals
         base_matrix[col.unsqueeze(-1), row.unsqueeze(-2)] = bot_vals
+
+        # Returns base_matrix of shape (B, N, N)
         return base_matrix
 
     def insert_kmodes(self, base_matrix: torch.Tensor):
-        return base_matrix.unsqueeze(0) + self.kmodes.view(
+        return base_matrix + self.kmodes.view(
             -1, 1, 1
-        ) * self.diag_mask.unsqueeze(0)  # .to(torch.complex64)
+        ) * self.diag_mask  # .to(torch.complex64)
 
     def matrix(self, x: torch.Tensor):
         return self.insert_kmodes(self.insert_deltas(x))
@@ -119,20 +126,31 @@ class DenseBDGSolver(torch.nn.Module):
         )
 
     def calculate_gradient(self, L: torch.Tensor, Q: torch.Tensor, T: torch.Tensor):
-        self._grad = (
-            self.kmode_weights.view(-1, 1, 1)
-            * eigenvalue_perturbation_gradient(
-                L,
-                Q,
-                self.potential_indices,
-                Beta=1.0 / (1e-15 + T),
-                Potential=self.potential,
-            )
-        ).sum(0)  # (B, N, N)
+        # self._grad = ( Old
+        #     self.kmode_weights.view(-1, 1, 1)
+        #     * eigenvalue_perturbation_gradient(
+        #         L,
+        #         Q,
+        #         self.potential_indices,
+        #         Beta=1.0 / (1e-15 + T),
+        #         Potential=self.potential,
+        #     )
+        # ).sum(0)  # (N, N)
+
+        # Batched gradient
+        self._grad = eigenvalue_perturbation_gradient(
+            L,
+            Q,
+            self.potential_indices,
+            Beta=1.0 / (1e-15 + T),
+            Potential=self.potential,
+        )
+        # (B, N, N)
         return self._grad
 
     def forward(self, x: torch.Tensor):
         # Do batched diagonalisation, one for each k-mode
+        # x is either of shape (B, nnz) or (1, nnz). Either case broadcastable to (1, nnz)
         print("Diagonalizing...")
         start = time.time()
         L, Q = torch.linalg.eigh(self.matrix(x))
@@ -196,7 +214,6 @@ class DenseBDGSolver(torch.nn.Module):
         res_L = torch.zeros(B, N).to(L.dtype)
         res_Q = torch.zeros(B, N, N).to(Q.dtype)
 
-
         for n in range(matrix.shape[1]):
             blk = blocks[n]
             res_L[:, blk] = L[:, n, :]
@@ -256,9 +273,8 @@ class DenseBDGSolver(torch.nn.Module):
         # # Have now found a value of r that is too small.
         # rmin = r
 
-
-        new_min = minval + (maxval - minval)*rmin
-        new_max = minval + (maxval - minval)*rmax
+        new_min = minval + (maxval - minval) * rmin
+        new_max = minval + (maxval - minval) * rmax
 
         minval = new_min
         maxval = new_max
@@ -274,7 +290,9 @@ class DenseBDGSolver(torch.nn.Module):
             else:
                 minval = t
 
-            storage.save_kwargs('crit_temps', minval=minval.item(), maxval=maxval.item())
+            storage.save_kwargs(
+                "crit_temps", minval=minval.item(), maxval=maxval.item()
+            )
         return (maxval + minval).item() / 2
 
     def free_energy(self, x: torch.Tensor):
@@ -310,7 +328,7 @@ class DenseBDGSolver(torch.nn.Module):
         # x0[0] = 1.0
 
         res = newton(self, x0, verbose=True)
-        storage.store('order_parameters', res)
+        storage.store("order_parameters", res)
 
         return res.numpy()
         assert False

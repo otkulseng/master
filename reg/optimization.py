@@ -131,10 +131,13 @@ def newton(
     x_norm=1e-10,
 ):
 
+    # This is a batched newtons method!
+    # x0 is of shape (B, N)
+
     best_norm = torch.inf
 
     for it in range(max_iter):
-        f0 = f.eval(x0)
+        f0 = f.eval(x0) # (B, N)
 
         current_norm = torch.max(torch.abs(f0))
         rel_change = torch.max(torch.abs(f0) / (1e-15 + torch.abs(x0)))
