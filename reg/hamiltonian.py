@@ -197,8 +197,11 @@ def main():
                 H[i, j] = -1.0 * sigma0
 
         # T = ham.critical_temperature()
-        # ham.solve(0.0)
-        ham.solve(0.06238555908203125/4)
+        x = ham.solve(0.0)
+        # x = ham.solve(0.06238555908203125/4)
+        plt.plot(x)
+        plt.savefig('temp.pdf')
+
         # ham.crit*
 
 
