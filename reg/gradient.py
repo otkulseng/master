@@ -5,8 +5,8 @@ import torch
 def batch_consistency(
     L: torch.Tensor,
     Q: torch.Tensor,
-    Idx: torch.Tensor,
     Beta: torch.Tensor,
+    Idx: torch.Tensor,
     Potential: torch.Tensor,
 ):
     L = torch.real(L)
@@ -46,8 +46,8 @@ def batch_consistency(
 def eigenvalue_perturbation_gradient(
     L: torch.Tensor,
     Q: torch.Tensor,
-    Idx: torch.Tensor,
     Beta: torch.Tensor,
+    Idx: torch.Tensor,
     Potential: torch.Tensor,
     batch_size: int = 8
 ):

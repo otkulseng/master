@@ -3,6 +3,7 @@ import torch
 from scipy.optimize import approx_fprime
 import numpy as np
 import storage
+from util import BDGFunction
 
 def broydenB2(
     f,
@@ -65,7 +66,7 @@ def broydenB2(
 
 
 def broydenB1(
-    f,
+    f: BDGFunction,
     x0,
     x1=None,
     J0=None,
@@ -122,7 +123,7 @@ def broydenB1(
     return best_x
 
 def newton(
-    f,
+    f: BDGFunction,
     x0,
     max_iter=100,
     eps=1e-10,
@@ -134,56 +135,47 @@ def newton(
     # This is a batched newtons method!
     # x0 is of shape (B, N)
 
-    best_norm = torch.inf
 
+    # Do empty_like f0, as x0 might be (1, nnz) due to broadcasting capabilities.
+    # f0 is always (B, nnz).
+    # Storage for output
+    f0, J0 = f(x0)
+
+    x = x0 - torch.linalg.solve(J0, f0)
+    # Therefore, do one iteration.
+
+    out = torch.empty_like(f0)
+
+    B, _ = f0.shape
+    active_indices = torch.arange(B)
     for it in range(max_iter):
-        f0 = f.eval(x0) # (B, nnz)
+        # Continue until all converge
+        if len(active_indices) == 0:
+            break
 
-        current_norm: torch.Tensor = torch.linalg.vector_norm(f0, dim=-1, ord=torch.inf)
+        x_active = x[active_indices]
 
-        current_done = torch.where(current_norm < eps, 1, 0).sum() / current_norm.numel()
-        # current_norm = torch.max(torch.abs(f0), dim=-1)
+        f_active, J_active = f(x_active, active_indices)
+        norm_active: torch.Tensor = torch.linalg.vector_norm(f_active, dim=-1, ord=torch.inf)
+        converged = norm_active < eps
 
-        rel_change = torch.max(torch.abs(f0) / (1e-15 + torch.abs(x0)))
+        x_active_new = x_active + torch.linalg.solve(J_active, -f_active)
+        x[active_indices] = x_active_new
 
-        current_max = current_norm.max().item()
-        if current_max < best_norm:
-            best_norm = current_max
-            best_x = torch.clone(x0)
+        # Store the ones that converged
+        out[active_indices[converged]] = x_active_new[converged]
+
+        active_indices = active_indices[~converged]
+
+        # print(active_indices)
+
 
         if verbose:
             print(
-                f"It: {it}\t norm: {current_max}\t rel: {current_done.item()}\t mid: {torch.mean(torch.abs(x0))}"
+                f"It: {it}\t norm: {norm_active.max().item()}\t #active: {active_indices.numel()}\t mid: {torch.mean(torch.abs(x0))}"
             )
-
-        if current_max < eps:
-            break
-
-        if rel_change < rel_eps:
-            break
-
-        if torch.max(torch.abs(best_x)) < x_norm:
-            break
-
-        # gr = torch.clone(f.grad(x0)).real
-        # def inner(x):
-        #     x = torch.tensor(np.real(x)).to(torch.complex128)
-        #     return torch.real(f.eval(x)).numpy()
-        # jac = approx_fprime(x0, inner)
-        # # Perform newton step
-
-        # print(gr)
-        # print(jac)
-        # print((gr - jac).abs())
-        # # print(jac)
-        # print("Largest: ", (gr - torch.tensor(jac)).abs().max().item())
-        # assert(False)
-
-
-        x0 = x0 + torch.linalg.solve(f.grad(x0), -f0)
-
-        storage.store('newton_x', x0)
-        storage.store('newton_f', f0)
-    return best_x
+        storage.store('newton_x', out)
+        storage.store('newton_f', f_active)
+    return out
 
 

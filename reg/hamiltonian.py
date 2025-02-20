@@ -197,15 +197,25 @@ def main():
                 H[i, j] = -1.0 * sigma0
 
         # T = ham.critical_temperature()
-        x = ham.solve(0.0)
-        # x = ham.solve(0.06238555908203125/4)
-        plt.plot(x)
-        plt.savefig('temp.pdf')
+        # x = ham.solve(0.0)
+        solver = ham.solver()
+
+        x0 = solver.solve_diagonals(
+            solver.kmodes,
+            torch.tensor(0.0)
+        )
+
+        x0 = solver.kmode_weights @ x0
+        print(x0.shape)
+
+        plt.plot(x0.real.numpy())
+        plt.savefig("new.pdf")
+
 
         # ham.crit*
 
 
-    storage.close()
+    # storage.close()
 
 
 if __name__ == "__main__":
