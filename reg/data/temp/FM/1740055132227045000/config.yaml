@@ -1,0 +1,11 @@
+Nfm: 13
+Nsc: 27
+V: 1.0
+kmodes:
+- 200
+m: 0.25
+mu: 0.1
+shape: !!python/tuple
+- 40
+- 1
+- 1

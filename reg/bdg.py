@@ -48,8 +48,8 @@ class DenseBDGSolver(torch.nn.Module):
         self.potential_rows = 4 * V_row[:, None] + torch.arange(2)
         self.potential_cols = 4 * V_col[:, None] + torch.arange(2) + 2
 
-        self.potential_rows = self.potential_rows.unsqueeze(0) # Batch dimension
-        self.potential_cols = self.potential_cols.unsqueeze(0) # Batch dimension
+        self.potential_rows = self.potential_rows # Batch dimension
+        self.potential_cols = self.potential_cols # Batch dimension
 
         # K modes is a up to 3d list of diagonal entries
         freqs = [2 * torch.cos(2 * torch.pi * torch.fft.fftfreq(N)) for N in kmodes]
@@ -68,7 +68,7 @@ class DenseBDGSolver(torch.nn.Module):
 
         print(f"Number of unique k modes: {self.kmode_weights.shape}")
 
-        self.diag_mask = torch.diag(torch.tensor([1, 1, -1, -1]).repeat(N)).unsqueeze(0)
+        self.diag_mask = torch.diag(torch.tensor([1, 1, -1, -1]).repeat(N)).unsqueeze(0) # (1, N, N)
         self.potential = V_potential
 
         self._L = None
@@ -78,7 +78,7 @@ class DenseBDGSolver(torch.nn.Module):
         )
 
     def grad(self, x: torch.Tensor, eps: float = 1e-5):
-        return self._grad - torch.eye(x.numel(), dtype=torch.complex128)
+        return self._grad - torch.eye(self._grad.shape[-1], dtype=torch.complex128)
 
     def eval(self, x: torch.Tensor):
         return self.zero_func(x)
@@ -98,10 +98,11 @@ class DenseBDGSolver(torch.nn.Module):
 
     def insert_deltas(self, x: torch.Tensor):
         # x is of shape (batch, N)
-        x = x.expand(117, -1)
         B, nnz = x.shape
         jsigma2 = torch.tensor([[0, 1], [-1, 0]], dtype=torch.complex128)
-        top_vals = x.view(B, nnz, 1, 1) * jsigma2.view(1, 1, 2, 2)  # (batch, N, 2, 2)
+        # jsigma2 = torch.tensor([[0, 1], [-1, 0]], dtype=torch.complex128)
+        # top_vals = x.view(-1, 1, 1) * jsigma2  # (batch, N, 2, 2)
+        top_vals = x.view(B, -1, 1, 1) * jsigma2  # (batch, N, 2, 2)
 
         bot_vals = top_vals.conj().transpose(-2, -1)
 
@@ -109,18 +110,16 @@ class DenseBDGSolver(torch.nn.Module):
         row = self.potential_rows # (B, nnz,)
         col = self.potential_cols
 
-        print(row.shape, col.shape, top_vals.shape)
-        assert(False)
-        base_matrix = self.base_matrix.expand(B, -1, -1) # (B, 4N, 4N)
-        base_matrix[row.unsqueeze(-1), col.unsqueeze(-2)] = top_vals
-        base_matrix[col.unsqueeze(-1), row.unsqueeze(-2)] = bot_vals
+        # print(row.shape, col.shape, base_matrix.shape )
+        base_matrix = self.base_matrix.expand(B, -1, -1).clone() # (B, 4N, 4N)
+        base_matrix[:, row.unsqueeze(-1), col.unsqueeze(-2)] = top_vals
+        base_matrix[:, col.unsqueeze(-1), row.unsqueeze(-2)] = bot_vals
 
-        print(row.shape, col.shape, base_matrix.shape )
-        assert(False)
         # Returns base_matrix of shape (B, N, N)
         return base_matrix
 
     def insert_kmodes(self, base_matrix: torch.Tensor):
+
         return base_matrix + self.kmodes.view(
             -1, 1, 1
         ) * self.diag_mask  # .to(torch.complex64)
@@ -129,7 +128,8 @@ class DenseBDGSolver(torch.nn.Module):
         return self.insert_kmodes(self.insert_deltas(x))
 
     def consistency(self, L: torch.Tensor, Q: torch.Tensor):
-        return self.kmode_weights @ batch_consistency(
+        # No batch average yet
+        return  batch_consistency(
             L, Q, self.potential_indices, self.beta, self.potential
         )
 
@@ -338,6 +338,11 @@ class DenseBDGSolver(torch.nn.Module):
 
         res = newton(self, x0, verbose=True)
         storage.store("order_parameters", res)
+
+        print(res.shape)
+
+        res = self.kmode_weights @ res
+        
 
         return res.numpy()
         assert False

@@ -137,23 +137,26 @@ def newton(
     best_norm = torch.inf
 
     for it in range(max_iter):
-        f0 = f.eval(x0) # (B, N)
+        f0 = f.eval(x0) # (B, nnz)
 
-        current_norm = torch.max(torch.abs(f0), dim=-1)
-        print(current_norm)
-        assert(False)
+        current_norm: torch.Tensor = torch.linalg.vector_norm(f0, dim=-1, ord=torch.inf)
+
+        current_done = torch.where(current_norm < eps, 1, 0).sum() / current_norm.numel()
+        # current_norm = torch.max(torch.abs(f0), dim=-1)
+
         rel_change = torch.max(torch.abs(f0) / (1e-15 + torch.abs(x0)))
 
-        if current_norm < best_norm:
-            best_norm = current_norm
+        current_max = current_norm.max().item()
+        if current_max < best_norm:
+            best_norm = current_max
             best_x = torch.clone(x0)
 
         if verbose:
             print(
-                f"It: {it}\t norm: {current_norm}\t rel: {rel_change}\t mid: {torch.mean(torch.abs(x0))}"
+                f"It: {it}\t norm: {current_max}\t rel: {current_done.item()}\t mid: {torch.mean(torch.abs(x0))}"
             )
 
-        if current_norm < eps:
+        if current_max < eps:
             break
 
         if rel_change < rel_eps:
@@ -175,7 +178,6 @@ def newton(
         # # print(jac)
         # print("Largest: ", (gr - torch.tensor(jac)).abs().max().item())
         # assert(False)
-
 
 
         x0 = x0 + torch.linalg.solve(f.grad(x0), -f0)
