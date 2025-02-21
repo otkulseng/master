@@ -161,7 +161,7 @@ def main():
     Nfm = [50]
     Nsc = 50
     kmodes = [200]
-    mu = 0.1
+    mu = -0.1
     pot = 1.0
     m = 0.25
 
@@ -200,12 +200,9 @@ def main():
         # x = ham.solve(0.0)
         solver = ham.solver()
 
-        x0 = solver.solve_diagonals(
-            solver.kmodes,
-            torch.tensor(0.0)
+        x0 = solver.solve_integral(
+            torch.tensor(0.01)
         )
-
-        x0 = solver.kmode_weights @ x0
         print(x0.shape)
 
         plt.plot(x0.real.numpy())

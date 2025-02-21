@@ -142,3 +142,4 @@ class BDGFunction(torch.nn.Module):
         J = torch.jit.wait(J_future)
 
         return f - x, J - torch.eye(J.shape[-1], dtype=J.dtype)
+

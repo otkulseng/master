@@ -100,18 +100,18 @@ class DenseBDGSolver(torch.nn.Module):
         )  # (B, 4N, 4N)
 
         # Step 2. Calculate gradient around Delta=0, to check which diags will give Delta_k = 0
-        # L, Q = block_diagonalize(all_matrices)
-        # grads = eigenvalue_perturbation_gradient(
-        #     L, Q, Beta=beta, Idx=self.potential_indices, Potential=self.potential
-        # )
+        L, Q = block_diagonalize(all_matrices)
+        grads = eigenvalue_perturbation_gradient(
+            L, Q, Beta=beta, Idx=self.potential_indices, Potential=self.potential
+        )
         # Calculate the largest singular value for each batch dimension.
         # When this is above 1, it means that Delta=0 is stable at this temperature
         # and therefore we know immediately that this is the solution.
         # TODO: Might include trig-expansion here. Intuitively, that would strengthen the above argument.
         # TODO: Check whether matrix_norm could be used. They use A.abs() which would ruin...
-        # rho = torch.linalg.norm(grads, ord=2, dim=(-1, -2))
+        rho = torch.linalg.norm(grads, ord=2, dim=(-1, -2))
         # print(rho)
-        # mask = rho > 1  # These are the ones that will not converge to 0
+        mask = rho > 1  # These are the ones that will not converge to 0
         # Step 3, create a BDGFunction whose zeros are the deltas
         # func = torch.jit.script(BDGFunction(
         #     all_matrices[mask], # Keep only nonzero delta_k's
@@ -129,7 +129,7 @@ class DenseBDGSolver(torch.nn.Module):
         # )
 
         func = torch.jit.script(BDGFunction(
-            all_matrices, # Keep only nonzero delta_k's
+            all_matrices[mask], # Keep only nonzero delta_k's
             beta,
             self.potential_indices,
             self.potential,
@@ -145,14 +145,56 @@ class DenseBDGSolver(torch.nn.Module):
             verbose=True
         )
 
+        out = torch.zeros((B, x.size(-1)), dtype=torch.complex128)
+        out[mask] = x
+
+        return out
+
+    def solve_integral(self, temp: torch.Tensor):
+        # from integration import kronrod61_w, kronrod61_x, gauss_30_w
+        # a, b = 0, torch.pi
+        # # Transform integral from -1 to 1 to 0 to pi
+
+        # kronrod_nodes = (kronrod61_x.to(torch.complex128) + 1) / 2 * (b-a) + a
+        # kronrod_weights = kronrod61_w.to(torch.complex128) * (b - a) / 2
+        # gauss_30_w = gauss_30_w.to(torch.complex128)* (b - a) / 2
+
+        # kmodes = 2 * torch.cos(kronrod_nodes)
+
+        # res = self.solve_diagonals(kmodes, temp)
+
+        # full_precision = kronrod_weights @ res / torch.pi
+        # half_precision = gauss_30_w.to(torch.complex128) @ res[1::2] / torch.pi
 
 
 
-        # # print(mask.shape, x0.shape)
-        # out = torch.zeros(B, self.potential.numel(), dtype=torch.complex128)
+        # Combined chebyshev-gauss, trapezoidal rule
 
-        # out = x
-        return x
+        # Subdivide 0 to pi in N equal pieces
+
+        N = 201
+        kvals = torch.pi * (torch.arange(N) * 2 + 1) / (2 * N)
+        weights = torch.ones(N, dtype=torch.complex128) / N
+        # weights[0] = 0.5
+        # weights[-1] = 0.5
+
+        # Take the chebyshev-nodes
+        nodes = 2 * torch.cos(kvals)
+
+        res = self.solve_diagonals(nodes, temp) # (B, nnz)
+
+        diff = torch.diff(res, dim=0).norm(dim=1, p=torch.inf) / res.abs().max() # diff along batch dimension
+        full_precision = weights @ res
+        # print(diff.shape)
+        # assert(False)
+
+
+        plt.figure()
+        plt.plot((nodes[1:] + nodes[:-1])/4, diff.numpy())
+        plt.savefig("precision.pdf")
+        plt.figure()
+
+        return full_precision
 
     def grad(self, x: torch.Tensor, eps: float = 1e-5):
         return self._grad - torch.eye(self._grad.shape[-1], dtype=torch.complex128)

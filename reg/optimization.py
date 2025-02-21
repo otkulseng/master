@@ -153,7 +153,7 @@ def newton(
         if len(active_indices) == 0:
             break
 
-        x_active = x[active_indices]
+        x_active: torch.Tensor = x[active_indices]
 
         f_active, J_active = f(x_active, active_indices)
         norm_active: torch.Tensor = torch.linalg.vector_norm(f_active, dim=-1, ord=torch.inf)
@@ -172,7 +172,7 @@ def newton(
 
         if verbose:
             print(
-                f"It: {it}\t norm: {norm_active.max().item()}\t #active: {active_indices.numel()}\t mid: {torch.mean(torch.abs(x0))}"
+                f"It: {it}\t norm: {norm_active.max().item()}\t #active: {active_indices.numel()}\t mid: {x_active.abs().mean().item()}"
             )
         storage.store('newton_x', out)
         storage.store('newton_f', f_active)
