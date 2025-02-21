@@ -8,7 +8,7 @@ from gradient import eigenvalue_perturbation_gradient, batch_consistency
 
 
 import storage
-from util import block_diagonalize, BDGFunction
+from util import block_diagonalize, BDGFunction, rho_based_critical_temperature
 
 
 class DenseBDGSolver(torch.nn.Module):
@@ -78,6 +78,43 @@ class DenseBDGSolver(torch.nn.Module):
             (self.potential.numel(), self.potential.numel()), dtype=torch.complex128
         )
 
+    def critical_temperature(self):
+        """Adds each number in diags to the diagonal in a diag-mask sort of way
+
+        Args:
+            diags (torch.Tensor): _description_
+        """
+
+        # Step 1. Create all the matrices stemming from broadcasting each element of diags on the diagonal
+        # of self.base_matrix
+
+        N = 65
+        kvals = torch.pi * (torch.arange(N) * 2 + 1) / (2 * N)
+        nodes = 2 * torch.cos(kvals)
+
+
+        base_matrix = self.base_matrix.clone()
+        size, _ = base_matrix.shape
+        N = size // 4
+        B = nodes.size(0)
+
+        diag_mask = torch.diag(torch.tensor([1, 1, -1, -1]).repeat(N)).unsqueeze(
+            0
+        )  # (1, 4N, 4N)
+        all_matrices = nodes.view(-1, 1, 1) * diag_mask + base_matrix.unsqueeze(
+            0
+        )  # (B, 4N, 4N)
+
+        func = torch.jit.script(BDGFunction(
+            all_matrices, # Keep only nonzero delta_k's
+            torch.tensor(0.0),
+            self.potential_indices,
+            self.potential,
+        ))
+
+        temp = rho_based_critical_temperature(func, torch.ones(B, dtype=torch.complex128)/B)
+
+        return temp
     def solve_diagonals(self, diags: torch.Tensor, temp: torch.Tensor):
         """Adds each number in diags to the diagonal in a diag-mask sort of way
 
@@ -113,20 +150,6 @@ class DenseBDGSolver(torch.nn.Module):
         # print(rho)
         mask = rho > 1  # These are the ones that will not converge to 0
         # Step 3, create a BDGFunction whose zeros are the deltas
-        # func = torch.jit.script(BDGFunction(
-        #     all_matrices[mask], # Keep only nonzero delta_k's
-        #     beta,
-        #     self.potential_indices,
-        #     self.potential,
-        # ))
-
-        # Step 4, use newtons method to solve for the zero
-
-        # x0 = newton(
-        #     func,
-        #     torch.ones(self.potential.numel(), dtype=torch.complex128).unsqueeze(0),
-        #     verbose=True
-        # )
 
         func = torch.jit.script(BDGFunction(
             all_matrices[mask], # Keep only nonzero delta_k's
@@ -134,21 +157,20 @@ class DenseBDGSolver(torch.nn.Module):
             self.potential_indices,
             self.potential,
         ))
-        # for a, b in zip(x0, rho[mask]):
-        #     print(a.abs().sum().item(), b)
-
         # Step 4, use newtons method to solve for the zero
-
         x = newton(
             func,
             torch.ones(self.potential.numel(), dtype=torch.complex128).unsqueeze(0),
             verbose=True
         )
 
+        # Step 5, place the non-zero results in the matrix
         out = torch.zeros((B, x.size(-1)), dtype=torch.complex128)
         out[mask] = x
 
         return out
+
+
 
     def solve_integral(self, temp: torch.Tensor):
         # from integration import kronrod61_w, kronrod61_x, gauss_30_w
@@ -304,70 +326,7 @@ class DenseBDGSolver(torch.nn.Module):
         #     dim=1,
         # )
 
-    def critical_temperature(self, minval=0.0, maxval=1.0, eps=1e-3):
-        print("Diagonalizing")
-        L, Q = self.block_diagonalize(
-            self.matrix(torch.zeros_like(self.potential.to(torch.complex128)))
-        )
 
-        print("Starting binary search")
-        minval = torch.tensor(minval)
-        maxval = torch.tensor(maxval)
-
-        # Indicator function. Largest eigenvalue less than 1 means non-superconducting.
-        # That is, need to make maxval smaller
-
-        def indicator_func(t):
-            rho = torch.linalg.norm(self.calculate_gradient(L, Q, t), ord=2)
-            print(rho)
-            return rho < 1
-
-        if indicator_func(minval):
-            # Non-superconducting at minval...
-            return minval
-
-        # Start in the middle
-        r = 0.5
-        # Go aggressively down from maxval
-        rmax = 1
-        rmin = 0
-
-        print("Entering first loop")
-        while indicator_func(minval + (maxval - minval) * r):
-            # This value of r is too big. New maximum
-            rmax = r
-            r = r**2
-            rmin = r
-
-            print(r)
-
-            if r < 1e-10:
-                return minval.item()
-
-        # # Have now found a value of r that is too small.
-        # rmin = r
-
-        new_min = minval + (maxval - minval) * rmin
-        new_max = minval + (maxval - minval) * rmax
-
-        minval = new_min
-        maxval = new_max
-
-        print("Entering second loop")
-        while (maxval - minval) / (maxval + minval) > eps:
-            t = (maxval + minval) / 2
-
-            print(f"{minval.item()}, {maxval.item()}")
-
-            if indicator_func(t):
-                maxval = t
-            else:
-                minval = t
-
-            storage.save_kwargs(
-                "crit_temps", minval=minval.item(), maxval=maxval.item()
-            )
-        return (maxval + minval).item() / 2
 
     def free_energy(self, x: torch.Tensor):
         # The gradient obtained using eigvalsh is always numerically stable,

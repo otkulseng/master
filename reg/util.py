@@ -101,6 +101,8 @@ def insert_deltas(
     # Returns base_matrix of shape (B, N, N)
     return base_matrix
 
+def rel_diff(a, b):
+    return torch.abs(a - b) /(1e-15 + torch.abs(a + b))
 
 class BDGFunction(torch.nn.Module):
     """Calculates f(deltas) and J(deltas) for batches in parallel."""
@@ -143,3 +145,84 @@ class BDGFunction(torch.nn.Module):
 
         return f - x, J - torch.eye(J.shape[-1], dtype=J.dtype)
 
+    @torch.jit.export
+    def LQ(self, x: torch.Tensor):
+        return torch.linalg.eigh(insert_deltas(x, self.base_matrix, self.row, self.col))
+
+    @torch.jit.export
+    def matrix(self, x: torch.Tensor):
+        return insert_deltas(x, self.base_matrix, self.row, self.col)
+
+    def get_rho(self, L, Q, beta, weights):
+        M = torch.einsum(
+            "b, bij->ij",
+            weights,
+            eigenvalue_perturbation_gradient(L, Q, beta, self.idx, self.pot),
+        )
+
+        return torch.linalg.norm(M, ord=2)
+
+    @torch.jit.export
+    def critical_temperature(
+        self,
+        weights: torch.Tensor,
+        L: Optional[torch.Tensor] = None,
+        Q: Optional[torch.Tensor] = None,
+        eps: torch.Tensor = torch.tensor(1e-4),
+        max_iter: int = 100
+    ):
+
+        if L is None or Q is None:
+            L, Q = self.LQ(torch.zeros(1, self.pot.size(0), dtype=torch.complex128))
+
+        min_temp = torch.tensor(0.0) + 1e-15
+        max_temp = torch.tensor(1.0)
+
+        min_rho = torch.jit.fork(self.get_rho, L, Q, 1 / min_temp, weights)
+        max_rho = torch.jit.fork(self.get_rho, L, Q, 1 / max_temp, weights)
+
+        min_rho = torch.jit.wait(min_rho)
+        max_rho = torch.jit.wait(max_rho)
+
+        # Ensure min-rho and max-rho are on different sides of 1
+        if not (min_rho > 1 and max_rho < 1):
+            return min_temp
+
+        told = min_temp
+        tmid = max_temp
+        for it in range(max_iter):
+            # Interpolate between mintemp and maxtemp
+            curr = rel_diff(told, tmid)
+            if curr < eps:
+                break
+            told = tmid
+
+            x = (1 - min_rho) / (max_rho - min_rho)
+            tmid = min_temp + (max_temp - min_temp) * x*0.9 # Multiply by 0.9 to make the interval shrink on both sides
+
+
+            rho = self.get_rho(L, Q, 1 / tmid, weights)
+            print(f"{it}: {rho.item()}\t {tmid.item()} \t {curr.item()}\t {min_temp.item()} vs {max_temp.item()}")
+            if rho > 1:
+                # Higher temperature!!
+                min_temp = tmid
+                min_rho = rho
+            else:
+                max_temp = tmid
+                max_rho = rho
+
+        # Do interpolation search. Assume rho changes linearly betwewn minval and maxval
+
+        return tmid
+
+
+def rho_based_critical_temperature(matr_func: BDGFunction, weights: torch.Tensor):
+    nnz = matr_func.pot.size(0)  # nnz. I.e. number of order parameters
+    matr: torch.Tensor = matr_func.matrix(torch.zeros(1, nnz, dtype=torch.complex128))
+
+    # TODO: Make torchscript-compatible blocks diagonalization to make this function redundant
+    L, Q = block_diagonalize(matr)
+
+    T = matr_func.critical_temperature(weights, L, Q)
+    print(T)
+    assert False

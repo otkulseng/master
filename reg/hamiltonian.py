@@ -200,13 +200,7 @@ def main():
         # x = ham.solve(0.0)
         solver = ham.solver()
 
-        x0 = solver.solve_integral(
-            torch.tensor(0.01)
-        )
-        print(x0.shape)
-
-        plt.plot(x0.real.numpy())
-        plt.savefig("new.pdf")
+        T = solver.critical_temperature()
 
 
         # ham.crit*
