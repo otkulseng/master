@@ -50,22 +50,9 @@ class DenseBDGSolver(torch.nn.Module):
         self.potential_rows = self.potential_rows  # Batch dimension
         self.potential_cols = self.potential_cols  # Batch dimension
 
-        # K modes is a up to 3d list of diagonal entries
-        freqs = [2 * torch.cos(2 * torch.pi * torch.fft.fftfreq(N)) for N in kmodes]
+        assert(len(kmodes) == 1) # Only support pseudo 2D for now
 
-        if len(freqs) > 0:
-            mesh: list[torch.Tensor] = list(torch.meshgrid(freqs, indexing="ij"))
-            kmodes = torch.stack(mesh, dim=0)
-            kmodes = kmodes.sum(dim=0).reshape(-1)
-
-            unique_elements, counts = torch.unique(kmodes, return_counts=True)
-            self.kmode_weights = (counts / kmodes.shape[0]).to(torch.complex128)
-            self.kmodes = unique_elements
-        else:
-            self.kmode_weights = torch.tensor([1], dtype=torch.complex128)
-            self.kmodes = torch.tensor([0], dtype=torch.complex128)
-
-        print(f"Number of unique k modes: {self.kmode_weights.shape}")
+        self.num_kmodes = kmodes[0]
 
         self.diag_mask = torch.diag(torch.tensor([1, 1, -1, -1]).repeat(N)).unsqueeze(
             0
@@ -78,7 +65,7 @@ class DenseBDGSolver(torch.nn.Module):
             (self.potential.numel(), self.potential.numel()), dtype=torch.complex128
         )
 
-    def critical_temperature(self):
+    def critical_temperature(self, min_temp: float = 0.0, max_temp: float = 1.0):
         """Adds each number in diags to the diagonal in a diag-mask sort of way
 
         Args:
@@ -88,8 +75,7 @@ class DenseBDGSolver(torch.nn.Module):
         # Step 1. Create all the matrices stemming from broadcasting each element of diags on the diagonal
         # of self.base_matrix
 
-        N = 65
-        kvals = torch.pi * (torch.arange(N) * 2 + 1) / (2 * N)
+        kvals = torch.pi * (torch.arange(self.num_kmodes) * 2 + 1) / (2 * self.num_kmodes)
         nodes = 2 * torch.cos(kvals)
 
 
@@ -112,9 +98,8 @@ class DenseBDGSolver(torch.nn.Module):
             self.potential,
         ))
 
-        temp = rho_based_critical_temperature(func, torch.ones(B, dtype=torch.complex128)/B)
+        return rho_based_critical_temperature(func, torch.ones(B, dtype=torch.complex128)/B, min_temp=min_temp, max_temp=max_temp)
 
-        return temp
     def solve_diagonals(self, diags: torch.Tensor, temp: torch.Tensor):
         """Adds each number in diags to the diagonal in a diag-mask sort of way
 

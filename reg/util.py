@@ -169,14 +169,22 @@ class BDGFunction(torch.nn.Module):
         L: Optional[torch.Tensor] = None,
         Q: Optional[torch.Tensor] = None,
         eps: torch.Tensor = torch.tensor(1e-4),
-        max_iter: int = 100
+        max_iter: int = 100,
+        min_temp: Optional[torch.Tensor] = None,
+        max_temp: Optional[torch.Tensor] = None
     ):
 
         if L is None or Q is None:
             L, Q = self.LQ(torch.zeros(1, self.pot.size(0), dtype=torch.complex128))
 
-        min_temp = torch.tensor(0.0) + 1e-15
-        max_temp = torch.tensor(1.0)
+        min_update = True
+        max_update = True
+        if min_temp is None:
+            min_temp = torch.tensor(0.0) +1e-15
+            min_update = False
+        if max_temp is None:
+            max_temp = torch.tensor(1.0)
+            max_update = False
 
         min_rho = torch.jit.fork(self.get_rho, L, Q, 1 / min_temp, weights)
         max_rho = torch.jit.fork(self.get_rho, L, Q, 1 / max_temp, weights)
@@ -190,6 +198,8 @@ class BDGFunction(torch.nn.Module):
 
         told = min_temp
         tmid = max_temp
+
+
         for it in range(max_iter):
             # Interpolate between mintemp and maxtemp
             curr = rel_diff(told, tmid)
@@ -197,17 +207,25 @@ class BDGFunction(torch.nn.Module):
                 break
             told = tmid
 
-            x = (1 - min_rho) / (max_rho - min_rho)
-            tmid = min_temp + (max_temp - min_temp) * x*0.9 # Multiply by 0.9 to make the interval shrink on both sides
+            if min_update and max_update:
+                x = (1 - min_rho) / (max_rho - min_rho)
+                tmid = min_temp + (max_temp - min_temp) * x
+            else:
+                tmid = (min_temp + max_temp) / 2
 
+            # tmid = 0.5 * (min_temp + max_temp) / 2  + 0.5 * tint
 
+            # Ensure we do at least a good a job as binary search
             rho = self.get_rho(L, Q, 1 / tmid, weights)
+
             print(f"{it}: {rho.item()}\t {tmid.item()} \t {curr.item()}\t {min_temp.item()} vs {max_temp.item()}")
             if rho > 1:
                 # Higher temperature!!
+                min_update = True
                 min_temp = tmid
                 min_rho = rho
             else:
+                max_update = True
                 max_temp = tmid
                 max_rho = rho
 
@@ -216,13 +234,12 @@ class BDGFunction(torch.nn.Module):
         return tmid
 
 
-def rho_based_critical_temperature(matr_func: BDGFunction, weights: torch.Tensor):
+def rho_based_critical_temperature(matr_func: BDGFunction, weights: torch.Tensor, min_temp = 0.0, max_temp=1.0):
     nnz = matr_func.pot.size(0)  # nnz. I.e. number of order parameters
     matr: torch.Tensor = matr_func.matrix(torch.zeros(1, nnz, dtype=torch.complex128))
 
     # TODO: Make torchscript-compatible blocks diagonalization to make this function redundant
     L, Q = block_diagonalize(matr)
 
-    T = matr_func.critical_temperature(weights, L, Q)
-    print(T)
-    assert False
+    return matr_func.critical_temperature(weights, L, Q, min_temp=torch.tensor(min_temp), max_temp=torch.tensor(max_temp))
+

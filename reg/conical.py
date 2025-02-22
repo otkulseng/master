@@ -6,10 +6,10 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 def test(Nsc):
-    kmodes = [200]
+    kmodes = [101]
     mu = 0.1
     pot = 0.7
-    m = 0.1
+    m = 0.25
     alpha = 4 * np.pi / 9
     beta = np.pi / 6
 
@@ -56,9 +56,10 @@ def test(Nsc):
             for i, j in lat.bonds():
                 H[i, j] = -1.0 * sigma0
 
-        T = ham.critical_temperature()
-        # ham.solve(0.06238555908203125)
-        # ham.crit*
+        tmax = 1
+        if len(res) > 0:
+            tmax = res[0]
+        T = ham.solver().critical_temperature(max_temp=tmax)
 
         res.append(T)
 
@@ -67,12 +68,13 @@ def test(Nsc):
     storage.close()
 
 def main():
-    test(100)
-    test(120)
-    test(140)
-    test(125)
+    test(90)
+    test(110)
     test(130)
-    test(135)
+    test(150)
+    # test(125)
+    # test(130)
+    # test(135)
 
 
 

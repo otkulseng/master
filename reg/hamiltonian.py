@@ -158,13 +158,15 @@ class PotentialHamiltonian:
 import matplotlib.pyplot as plt
 import time
 def main():
-    Nfm = [50]
+    Nfm = torch.arange(25)
     Nsc = 50
-    kmodes = [200]
+    kmodes = [101]
     mu = -0.1
     pot = 1.0
-    m = 0.25
+    m = 0.4
 
+
+    res = []
     storage.new("FM")
     for n in tqdm(Nfm):
         shape = (int(Nsc + n), 1, 1)
@@ -200,12 +202,16 @@ def main():
         # x = ham.solve(0.0)
         solver = ham.solver()
 
-        T = solver.critical_temperature()
+        max_temp = 1.0
+        if len(res) > 0:
+            max_temp = res[0]
 
-
+        T = solver.critical_temperature(max_temp=max_temp)
+        res.append(T.item())
         # ham.crit*
 
-
+    plt.plot(Nfm, res)
+    plt.savefig("crit_temp.pdf")
     # storage.close()
 
 
