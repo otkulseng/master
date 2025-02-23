@@ -159,7 +159,7 @@ def newton(
         norm_active: torch.Tensor = torch.linalg.vector_norm(f_active, dim=-1, ord=torch.inf)
         converged = norm_active < eps
 
-        x_active_new = x_active + torch.linalg.solve(J_active, -f_active)
+        x_active_new = x_active +  torch.linalg.solve(J_active, -f_active)
         x[active_indices] = x_active_new
 
         # Store the ones that converged

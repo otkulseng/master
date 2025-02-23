@@ -135,7 +135,7 @@ class DenseBDGSolver(torch.nn.Module):
         # print(rho)
         mask = rho > 1  # These are the ones that will not converge to 0
         # Step 3, create a BDGFunction whose zeros are the deltas
-
+        print(f"Solving at: {beta.item()}")
         func = torch.jit.script(BDGFunction(
             all_matrices[mask], # Keep only nonzero delta_k's
             beta,
@@ -145,7 +145,7 @@ class DenseBDGSolver(torch.nn.Module):
         # Step 4, use newtons method to solve for the zero
         x = newton(
             func,
-            torch.ones(self.potential.numel(), dtype=torch.complex128).unsqueeze(0),
+            1.0 * torch.ones(self.potential.numel(), dtype=torch.complex128).unsqueeze(0),
             verbose=True
         )
 
@@ -178,8 +178,7 @@ class DenseBDGSolver(torch.nn.Module):
         # Combined chebyshev-gauss, trapezoidal rule
 
         # Subdivide 0 to pi in N equal pieces
-
-        N = 201
+        N = self.num_kmodes
         kvals = torch.pi * (torch.arange(N) * 2 + 1) / (2 * N)
         weights = torch.ones(N, dtype=torch.complex128) / N
         # weights[0] = 0.5
@@ -190,16 +189,10 @@ class DenseBDGSolver(torch.nn.Module):
 
         res = self.solve_diagonals(nodes, temp) # (B, nnz)
 
-        diff = torch.diff(res, dim=0).norm(dim=1, p=torch.inf) / res.abs().max() # diff along batch dimension
         full_precision = weights @ res
         # print(diff.shape)
         # assert(False)
 
-
-        plt.figure()
-        plt.plot((nodes[1:] + nodes[:-1])/4, diff.numpy())
-        plt.savefig("precision.pdf")
-        plt.figure()
 
         return full_precision
 

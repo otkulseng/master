@@ -177,14 +177,10 @@ class BDGFunction(torch.nn.Module):
         if L is None or Q is None:
             L, Q = self.LQ(torch.zeros(1, self.pot.size(0), dtype=torch.complex128))
 
-        min_update = True
-        max_update = True
         if min_temp is None:
             min_temp = torch.tensor(0.0) +1e-15
-            min_update = False
         if max_temp is None:
             max_temp = torch.tensor(1.0)
-            max_update = False
 
         min_rho = torch.jit.fork(self.get_rho, L, Q, 1 / min_temp, weights)
         max_rho = torch.jit.fork(self.get_rho, L, Q, 1 / max_temp, weights)
@@ -196,42 +192,36 @@ class BDGFunction(torch.nn.Module):
         if not (min_rho > 1 and max_rho < 1):
             return min_temp
 
-        told = min_temp
-        tmid = max_temp
-
 
         for it in range(max_iter):
-            # Interpolate between mintemp and maxtemp
-            curr = rel_diff(told, tmid)
+            curr = rel_diff(min_temp, max_temp)
             if curr < eps:
                 break
-            told = tmid
 
-            if min_update and max_update:
-                x = (1 - min_rho) / (max_rho - min_rho)
-                tmid = min_temp + (max_temp - min_temp) * x
+            lower = (2 * min_temp + max_temp) / 3
+            higher = (min_temp + 2*max_temp) / 3
+            lower_rho = torch.jit.fork(self.get_rho, L, Q, 1 / lower, weights)
+            higher_rho = torch.jit.fork(self.get_rho, L, Q, 1 / higher, weights)
+
+            lower_rho = torch.jit.wait(lower_rho)
+            higher_rho = torch.jit.wait(higher_rho)
+
+
+            # Have min_temp, lower_temp, higher_temp, max_temp
+            #
+            if lower_rho < 1:
+                max_temp = lower
+            elif lower_rho > 1 and higher_rho < 1:
+                min_temp = lower
+                max_temp = higher
             else:
-                tmid = (min_temp + max_temp) / 2
+                min_temp = higher
 
-            # tmid = 0.5 * (min_temp + max_temp) / 2  + 0.5 * tint
-
-            # Ensure we do at least a good a job as binary search
-            rho = self.get_rho(L, Q, 1 / tmid, weights)
-
-            print(f"{it}: {rho.item()}\t {tmid.item()} \t {curr.item()}\t {min_temp.item()} vs {max_temp.item()}")
-            if rho > 1:
-                # Higher temperature!!
-                min_update = True
-                min_temp = tmid
-                min_rho = rho
-            else:
-                max_update = True
-                max_temp = tmid
-                max_rho = rho
+            print(f"{it}: rho={lower_rho.item(), higher_rho.item()}\t temp={min_temp.item(),max_temp.item()}\t eps={curr.item()}")
 
         # Do interpolation search. Assume rho changes linearly betwewn minval and maxval
 
-        return tmid
+        return (max_temp + min_temp) / 2
 
 
 def rho_based_critical_temperature(matr_func: BDGFunction, weights: torch.Tensor, min_temp = 0.0, max_temp=1.0):
