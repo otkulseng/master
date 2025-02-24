@@ -24,9 +24,9 @@ def insert_blocks(mat: jax.Array, block_indices: jax.Array, blocks: jax.Array):
     return mat.at[rows, cols].add(blocks.flatten())
 
 @jax.jit
-def add_diagonals(mat: jax.Array, kvals: jax.Array, mask: jax.Array):
-    """ Takes in a matrix (N, N) and B kvals and returns a tensor of
-    shape (B, N, N) with kvals * mask added to the diagonal
+def add_diagonal(mat: jax.Array, kvals: jnp.float32, mask: jax.Array):
+    """ Takes in a matrix (N, N) and number kvals and returns a tensor of
+    shape (N, N) with kvals * mask added to the diagonal
 
     Args:
         mat (jax.Array): N x N square matrix
@@ -34,15 +34,9 @@ def add_diagonals(mat: jax.Array, kvals: jax.Array, mask: jax.Array):
         mask (jax.Array): N. Diagonal mask
     """
 
-    B = kvals.shape[0]
-    mat_batched = jnp.broadcast_to(mat, (B, ) + mat.shape)
-
     x, y = jnp.diag_indices(mat.shape[-1])
+    return mat.at[x, y].add(kvals * mask)
 
-    diag_updates = kvals[:, None] * mask[None, :] # (B, 1) x (1, N) -> (B, N)
-
-    return mat_batched.at[:, x, y].add(diag_updates)
-
-@jax.jit
+# @jax.jit
 def generate_chebyshev_kmodes(N: int):
     return jnp.cos(jnp.pi * (jnp.arange(N) * 2 + 1) / (2 * N))

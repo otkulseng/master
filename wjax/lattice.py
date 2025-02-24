@@ -1,9 +1,14 @@
 from typing import NamedTuple, Any
 import jax.numpy as jnp
 import jax
-from bdg import BDGMatrix, to_dense, temperature_independent_correlations, tanhify_eigenvalues
+from bdg import (
+    BDGMatrix,
+    self_consistency_equation
+)
 from typing import Union, Iterable
+
 # from bdg import BDGMatrix, new_bdg_matrix, update_H, update_V, to_dense, StaticBDGMatrix
+from util import generate_chebyshev_kmodes, add_diagonal
 
 
 class CubicLattice:
@@ -76,7 +81,16 @@ class CubicLattice:
 
 
 class Hamiltonian:
-    def __init__(self, lat: CubicLattice):
+    def __init__(self, lat: CubicLattice, kmodes: Union[int, Iterable[int]]):
+        if isinstance(kmodes, int):
+            kmodes = [kmodes]
+
+        assert len(kmodes) == 1  # For now, only 1D
+        self.num_kmodes = kmodes[0]
+
+        self.kmodes = generate_chebyshev_kmodes(self.num_kmodes)
+        self.mask = jnp.tile(jnp.array([1, 1, -1, -1]), lat.size())
+
         self.lat = lat
 
         self.H_idx = jnp.empty((0, 2), dtype=jnp.int32)
@@ -131,45 +145,44 @@ class Hamiltonian:
         )
 
         results = []
-        for b in beta:
-            def forward(x):
-                matrix = to_dense(matr, x)
 
-                L, Q = jnp.linalg.eigh(matrix)
+        def forward(x):
+            # x of shape (temp, batch, nnz)
 
-                corr = temperature_independent_correlations(Q)# (Eigenvalues, Pos) : (4N, N)
-                tanh = tanhify_eigenvalues(L, b) # (Eigenvalues) : (4N, )
-                pot = matr.V_blk # (Pos) : (nnz,)
+            # vmap over batch dimension of x and kmodes
+            batch_fn = jax.vmap(self_consistency_equation,in_axes=(None, 0, 0, None))
 
+            # vmap over temp dimension of x and beta
+            temp_fn = jax.vmap(batch_fn, in_axes=(None, 0, None, 0))
 
-                prod = tanh[:, None] * corr[:, matr.pot_idx] * pot[None, :] # (Eigenvalues, Pos): (4N, nnz)
+            return temp_fn(matr, x, self.kmodes, beta)
 
-
-                return jnp.sum(prod[L.shape[0]//2:], axis=0)# (nnz)
-
-            func = jax.jit(forward)
-            x0 = 1*jnp.ones(matr.pot_idx.size, dtype=jnp.complex64)
-            for it in range(100):
-                xn = func(x0)
-
-                res = jnp.linalg.norm(xn - x0)
-                print(res)
-                if res < 1e-5:
-                    results.append(xn)
-                    break
-                x0 = xn
+        # jit function for speed
+        func = jax.jit(forward)
+        x0 = jnp.ones(
+            (beta.size, self.num_kmodes, matr.pot_idx.size), dtype=jnp.complex64
+        )  # (Temp, Batch, Pos)
+        for it in range(100):
+            xn = func(x0)
 
 
+            diff_delta = jnp.mean(xn - x0, axis=1) # (temp, nnz)
+            res = jnp.linalg.norm(diff_delta, axis=-1)
+            print(jnp.mean(res))
+            if jnp.mean(res) < 1e-3:
 
+                return jnp.mean(xn, axis=1) # (temp, nnz)
 
+            x0 = xn
 
-        return results
-
+        return []
 
 
 # NamedTuple to be a pytree. This is a custom sparse representation of a BDG Matrix
 
 import matplotlib.pyplot as plt
+
+
 def main():
     # def V(i, j):
     #     return i + j
@@ -177,20 +190,21 @@ def main():
     sigma0 = jnp.array([[1, 0], [0, 1]], dtype=jnp.complex64)
 
     # Create system
-    lat = CubicLattice(1, 1, 200)
-    ham = Hamiltonian(lat)
+    lat = CubicLattice(1, 1, 100)
+    ham = Hamiltonian(lat, [101])
     mu = 0.0
     V = 0.8
     ham.add_H(lambda i, j: [jnp.all(i == j)], lambda i, j: [-mu * sigma0])
     ham.add_H(lambda i, j: [jnp.any(i != j)], lambda i, j: [-sigma0])
-    ham.add_V(lambda i, j: [jnp.all(i == j), i[2] < 100], lambda i, j: [-V])
+    ham.add_V(lambda i, j: [jnp.all(i == j), i[2] < 50], lambda i, j: [-V])
 
     # ham.add_H()
 
-    temps = jnp.linspace(0, 1, 2)
+    temps = jnp.linspace(0, 0.03, 3)
+    temps = [0.0]
     res = ham.solve(temps)
 
-
+    print()
     for x, t in zip(res, temps):
         print(x.shape)
         print(x)
