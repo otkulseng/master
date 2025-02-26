@@ -32,7 +32,7 @@ def make_bdg_D_term(idx: jax.Array, blk: jax.Array):
 class BDGMatrix:
     def __init__(self, H_idx, H_blk, V_idx, V_blk, N):
         # Convert to static types, such that jit-functions can accept
-        # staticBDGMatrix.
+        # BDGMatrix.
         self.H_idx = jnp.array(H_idx)
         self.H_blk = jnp.array(H_blk)
         self.V_idx = jnp.array(V_idx)
@@ -53,14 +53,6 @@ class BDGMatrix:
 jax.tree_util.register_pytree_node(
     BDGMatrix, BDGMatrix.tree_flatten, BDGMatrix.tree_unflatten
 )
-
-# 24 tråder
-# 8
-# 3 processer
-
-# multiproccessing
-# MPI: Message Pass Interface
-
 
 @jax.jit
 def to_dense(sys: BDGMatrix, D: jax.Array):
@@ -105,6 +97,21 @@ def temperature_independent_correlations(Q: jax.Array):
 def tanhify_eigenvalues(L: jax.Array, beta):
     # L (N), beta (float)
     return jnp.tanh(jnp.real(beta * L / 2))
+
+
+@jax.custom_jvp
+def eigendecomp(sys: BDGMatrix, D: jax.Array, matr: jax.Array):
+    L, Q =  jnp.linalg.eigh(matr)
+
+    # Now, calculate gradients for D (not sys or matr), which is MUCH more efficient.
+    return L, Q
+
+@eigendecomp.defjvp
+def eigendecomp_gradient(primals, tangents):
+    sys, D, matr = primals
+    _, Ddot, _ = tangents
+
+    # Make this 
 
 
 @jax.jit
