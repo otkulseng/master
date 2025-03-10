@@ -211,7 +211,7 @@ def main():
         # ham.crit*
 
     plt.plot(Nfm, res)
-    plt.savefig("crit_temp.pdf")
+    plt.savefig("test.pdf")
     # storage.close()
 
 

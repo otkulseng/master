@@ -50,7 +50,7 @@ class DenseBDGSolver(torch.nn.Module):
         self.potential_rows = self.potential_rows  # Batch dimension
         self.potential_cols = self.potential_cols  # Batch dimension
 
-        assert(len(kmodes) == 1) # Only support pseudo 2D for now
+        assert len(kmodes) == 1  # Only support pseudo 2D for now
 
         self.num_kmodes = kmodes[0]
 
@@ -75,9 +75,10 @@ class DenseBDGSolver(torch.nn.Module):
         # Step 1. Create all the matrices stemming from broadcasting each element of diags on the diagonal
         # of self.base_matrix
 
-        kvals = torch.pi * (torch.arange(self.num_kmodes) * 2 + 1) / (2 * self.num_kmodes)
+        kvals = (
+            torch.pi * (torch.arange(self.num_kmodes) * 2 + 1) / (2 * self.num_kmodes)
+        )
         nodes = 2 * torch.cos(kvals)
-
 
         base_matrix = self.base_matrix.clone()
         size, _ = base_matrix.shape
@@ -91,22 +92,38 @@ class DenseBDGSolver(torch.nn.Module):
             0
         )  # (B, 4N, 4N)
 
-        func = torch.jit.script(BDGFunction(
-            all_matrices, # Keep only nonzero delta_k's
-            torch.tensor(0.0),
-            self.potential_indices,
-            self.potential,
-        ))
+        func = torch.jit.script(
+            BDGFunction(
+                all_matrices,  # Keep only nonzero delta_k's
+                torch.tensor(0.0),
+                self.potential_indices,
+                self.potential,
+            )
+        )
 
-        return rho_based_critical_temperature(func, torch.ones(B, dtype=torch.complex128)/B, min_temp=min_temp, max_temp=max_temp)
+        return rho_based_critical_temperature(
+            func,
+            torch.ones(B, dtype=torch.complex128) / B,
+            min_temp=min_temp,
+            max_temp=max_temp,
+        )
 
-    def solve_diagonals(self, diags: torch.Tensor, temp: torch.Tensor):
+    def solve_diagonals(
+        self,
+        diags: torch.Tensor,
+        temp: torch.Tensor,
+        x0: torch.Tensor = None,
+    ):
         """Adds each number in diags to the diagonal in a diag-mask sort of way
 
         Args:
             diags (torch.Tensor): _description_
         """
 
+        if x0 is None:
+            x0 = torch.ones(
+                self.potential.numel(), dtype=torch.complex128
+            ).unsqueeze(0)
         # Step 1. Create all the matrices stemming from broadcasting each element of diags on the diagonal
         # of self.base_matrix
         beta = 1.0 / (1e-15 + temp)
@@ -122,42 +139,40 @@ class DenseBDGSolver(torch.nn.Module):
         )  # (B, 4N, 4N)
 
         # Step 2. Calculate gradient around Delta=0, to check which diags will give Delta_k = 0
-        L, Q = block_diagonalize(all_matrices)
-        grads = eigenvalue_perturbation_gradient(
-            L, Q, Beta=beta, Idx=self.potential_indices, Potential=self.potential
-        )
-        # Calculate the largest singular value for each batch dimension.
-        # When this is above 1, it means that Delta=0 is stable at this temperature
-        # and therefore we know immediately that this is the solution.
-        # TODO: Might include trig-expansion here. Intuitively, that would strengthen the above argument.
-        # TODO: Check whether matrix_norm could be used. They use A.abs() which would ruin...
-        rho = torch.linalg.norm(grads, ord=2, dim=(-1, -2))
-        # print(rho)
-        mask = rho > 1  # These are the ones that will not converge to 0
+        # L, Q = block_diagonalize(all_matrices)
+
+        # grads = eigenvalue_perturbation_gradient(
+        #     L, Q, Beta=beta, Idx=self.potential_indices, Potential=self.potential
+        # )
+        # # Calculate the largest singular value for each batch dimension.
+        # # When this is above 1, it means that Delta=0 is stable at this temperature
+        # # and therefore we know immediately that this is the solution.
+        # # TODO: Might include trig-expansion here. Intuitively, that would strengthen the above argument.
+        # # TODO: Check whether matrix_norm could be used. They use A.abs() which would ruin...
+        # # print(grads.shape)
+        # rho = torch.linalg.norm(grads, ord=2, dim=(-1, -2))
+        # # print(rho)
+        # mask = rho > 0  # These are the ones that will not converge to 0
         # Step 3, create a BDGFunction whose zeros are the deltas
         print(f"Solving at: {beta.item()}")
-        func = torch.jit.script(BDGFunction(
-            all_matrices[mask], # Keep only nonzero delta_k's
-            beta,
-            self.potential_indices,
-            self.potential,
-        ))
-        # Step 4, use newtons method to solve for the zero
-        x = newton(
-            func,
-            1.0 * torch.ones(self.potential.numel(), dtype=torch.complex128).unsqueeze(0),
-            verbose=True
+        self.func = torch.jit.script(
+            BDGFunction(
+                all_matrices,  # Keep only nonzero delta_k's
+                beta,
+                self.potential_indices,
+                self.potential,
+            )
         )
+        # Step 4, use newtons method to solve for the zero
+        x = newton(self.func, x0, verbose=True, max_iter=50)
 
-        # Step 5, place the non-zero results in the matrix
-        out = torch.zeros((B, x.size(-1)), dtype=torch.complex128)
-        out[mask] = x
+        # # Step 5, place the non-zero results in the matrix
+        # out = torch.zeros((B, x.size(-1)), dtype=torch.complex128)
+        # out[mask] = x
 
-        return out
+        return x
 
-
-
-    def solve_integral(self, temp: torch.Tensor):
+    def solve_integral(self, temp: torch.Tensor, x0=None):
         # from integration import kronrod61_w, kronrod61_x, gauss_30_w
         # a, b = 0, torch.pi
         # # Transform integral from -1 to 1 to 0 to pi
@@ -173,8 +188,6 @@ class DenseBDGSolver(torch.nn.Module):
         # full_precision = kronrod_weights @ res / torch.pi
         # half_precision = gauss_30_w.to(torch.complex128) @ res[1::2] / torch.pi
 
-
-
         # Combined chebyshev-gauss, trapezoidal rule
 
         # Subdivide 0 to pi in N equal pieces
@@ -187,14 +200,13 @@ class DenseBDGSolver(torch.nn.Module):
         # Take the chebyshev-nodes
         nodes = 2 * torch.cos(kvals)
 
-        res = self.solve_diagonals(nodes, temp) # (B, nnz)
+        return self.solve_diagonals(nodes, temp,x0=x0)  # (B, nnz)
 
         full_precision = weights @ res
         # print(diff.shape)
         # assert(False)
 
-
-        return full_precision
+        return full_precision.numpy()
 
     def grad(self, x: torch.Tensor, eps: float = 1e-5):
         return self._grad - torch.eye(self._grad.shape[-1], dtype=torch.complex128)
@@ -267,8 +279,8 @@ class DenseBDGSolver(torch.nn.Module):
         self._grad = eigenvalue_perturbation_gradient(
             L,
             Q,
+            1.0 / (1e-15 + T),
             self.potential_indices,
-            Beta=1.0 / (1e-15 + T),
             Potential=self.potential,
         )
         # (B, N, N)
@@ -304,30 +316,31 @@ class DenseBDGSolver(torch.nn.Module):
         #     dim=1,
         # )
 
-
-
-    def free_energy(self, x: torch.Tensor):
+    def free_energy(self, x: torch.Tensor, temp: torch.Tensor):
+        beta = 1 / (1e-10 + temp)
         # The gradient obtained using eigvalsh is always numerically stable,
         # as opposed to the ones obtained using eigh.
-        evals = torch.linalg.eigvalsh(self.find_blocks(self.matrix(x)))
+
+        evals, _ = block_diagonalize(self.func.matrix(x)) # (B, nnz)
+        # evals = torch.linalg.eigvalsh(self.matrix(x))
 
         # Only the positive eigenvalues contribute to the calculation
         evals = evals[evals > 0]
 
         # Superconducting contribution
-        E0 = torch.dot(x.conj(), x / self.potential)
+        E0 = torch.sum(x.conj() * x / self.potential[None, :])
 
         # Non-entropic contribution
         H0 = -1 / 2 * torch.sum(evals)
 
         # Entropy
-        S = torch.sum(torch.log(1 + torch.exp(-self.beta * evals)))
+        S = torch.sum(torch.log(1 + torch.exp(-beta * evals)))
 
         # Final result
-        return E0 + H0 - self.temperature * S
+        return E0 + H0 - temp * S
 
-    def condensation_energy(self, x: torch.Tensor):
-        return self.free_energy(x) - self.free_energy(torch.zeros_like(x))
+    def condensation_energy(self, x: torch.Tensor, temp: torch.Tensor):
+        return self.free_energy(x, temp) - self.free_energy(torch.zeros_like(x), temp)
 
     def solve(self, temperature: float):
         before = time.time()

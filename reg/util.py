@@ -140,10 +140,17 @@ class BDGFunction(torch.nn.Module):
             eigenvalue_perturbation_gradient, L, Q, self.beta, self.idx, self.pot
         )
 
+
+
         f = torch.jit.wait(f_future)
-        J = torch.jit.wait(J_future)
+        J: torch.Tensor = torch.jit.wait(J_future)
 
         return f - x, J - torch.eye(J.shape[-1], dtype=J.dtype)
+
+    @torch.jit.export
+    def precond_call(self, x: torch.Tensor, mask: Optional[torch.Tensor]=None):
+        f, J = self.forward(x, mask)
+        return torch.linalg.solve(J, f)
 
     @torch.jit.export
     def LQ(self, x: torch.Tensor):

@@ -76,14 +76,14 @@ def main():
 
     for Nsc, val in results.items():
         x, y = val
-        if Nsc not in [110, 120, 130,  150]:
-            continue
+        # if Nsc not in [110, 120, 130,  150]:
+        #     continue
         plt.plot(x, y / y[0], label=f'{Nsc}')
 
     plt.legend()
     plt.xlabel(r'$N_{FM}$')
     plt.ylabel(r'$T_c / T_c^0$')
-    plt.show()
+    plt.savefig("all.pdf")
 
 
         # print(conf.exists(), conf.name)

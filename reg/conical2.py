@@ -9,7 +9,7 @@ import torch
 def test(Nsc, Nfm: list):
     kmodes = [101]
     mu = 0.1
-    pot = 1.0
+    pot = 0.7
     m = 0.25
     alpha = 4 * np.pi / 9
     beta = np.pi / 6
@@ -75,7 +75,8 @@ def test(Nsc, Nfm: list):
 
         # storage.store('result', np.array(res))
     # t0 = hams[0].solver().critical_temperature(max_temp = 0.01)
-    t0 = hams[0].solver().critical_temperature(max_temp = 1.0)
+    # t0 = hams[0].solver().critical_temperature(max_temp = 1.0)
+    t0 = torch.tensor(0.05)
 
     temps = torch.linspace(0, t0, 20)
     storage.store('temps', temps.numpy())
@@ -95,7 +96,7 @@ def test(Nsc, Nfm: list):
     storage.close()
 
 def main():
-    test(50, [6, 15])
+    test(100, [6, 15])
     # test(125)
     # test(130)
     # test(135)

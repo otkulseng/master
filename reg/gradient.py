@@ -69,6 +69,7 @@ def eigenvalue_perturbation_gradient(
     )
     B, size = L.shape
     N = size // 4
+
     nnz = Potential.shape[0]
 
     Q_b = Q.transpose(-1, -2).view(B, 4 * N, N, 4).transpose(1, 2)
@@ -107,6 +108,7 @@ def eigenvalue_perturbation_gradient(
 
     Potential = Potential.view(1, 1, 1, -1)#.expand(B, batch_size, 2*N, nnz)
     out = torch.zeros((B, nnz, nnz), dtype=torch.complex128)
+
     for start in range(0, nnz, batch_size):
         end = int(min(nnz, start + batch_size))
         Q_K_Q = torch.matmul(K_Q[:, start:end, :, :], Q_b[:, start:end, :, :].conj())  # (B, batch_size, 2N, 4N)
@@ -143,7 +145,7 @@ def eigenvalue_perturbation_gradient(
             dim=2,
         ) / 2
 
-    return out.transpose(-1, -2)
+    return out#.transpose(-1, -2)
 def eigenvalue_perturbation_gradient_v2(
     L: torch.Tensor,
     Q: torch.Tensor,
