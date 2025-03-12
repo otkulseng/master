@@ -54,6 +54,7 @@ jax.tree_util.register_pytree_node(
     BDGMatrix, BDGMatrix.tree_flatten, BDGMatrix.tree_unflatten
 )
 
+
 @jax.jit
 def to_dense(sys: BDGMatrix, D: jax.Array):
     mat = jnp.empty((4 * sys.N, 4 * sys.N), dtype=jnp.complex64)
@@ -69,76 +70,119 @@ def to_dense(sys: BDGMatrix, D: jax.Array):
     return insert_blocks(mat, idx, blk)
 
 
-@jax.jit
-def temperature_independent_correlations(Q: jax.Array):
-    """
-    Args:
-        Q (jax.Array): (4N, 4N)
-    """
 
-    size = Q.shape[0]
+
+
+
+
+@jax.jit
+def matrix(sys: BDGMatrix, D: jax.Array, kmode: float):
+    # Create the matrix
+
+    # 4N by 4N matrix
+    matr: jax.Array = to_dense(sys, D)
+    size = matr.shape[0]
     N = size // 4
+    # Add kmode to diagonal
+    mask = jnp.tile(jnp.array([1, 1, -1, -1], dtype=jnp.complex64), N)
+    x, y = jnp.diag_indices(size)
+    matr = matr.at[x, y].add(kmode * mask)
+    return matr
+
+
+
+
+
+@jax.jit
+def self_consistency_equation(sys: BDGMatrix, D: jax.Array, kmode: float, beta: float):
+    # L, Q = my_eigh(matr)
+    L, Q = jnp.linalg.eigh(matrix(sys, D, kmode))
+    return consistency(sys, L, Q, beta)
+
+
+def perturb(idx, L, Q):
+    # Q has shape (4N, N, 4)
+
+    Qtilde: jax.Array = Q[:, idx, :]  # (4N, 4)
+
+    pert_matr = jnp.array(
+        [
+            [0, 0, 0, 1],
+            [0, 0, -1, 0],
+            [0, -1, 0, 0],
+            [1, 0, 0, 0],
+        ],
+        dtype=Qtilde.dtype,
+    )
+
+    numerator = (Qtilde @ pert_matr) @ jnp.transpose(Qtilde.conj(), (1, 0))  # (4N, 4N)
+
+    Ldiff = jnp.diag(Qtilde)  # (4N, )
+
+    # L has shape (4N, )
+    denom = L[None, :] - L[:, None]  # (4N, 4N)
+    denom = jnp.where(
+        jnp.abs(denom) < 1e-10, jnp.inf, denom
+    )  # Zero out the contributions that are too large.
+
+    frac = numerator / denom  # (4N, 4N)
+
+    Qdiff = jnp.tensordot(
+        frac, Q, axes=([1], [0])
+    )  # multiply last dimension of frac with first dimension of Q. Shape (4N, N, 4)
+
+    return Ldiff, Qdiff
+
+
+def single_index_jacobian(sys: BDGMatrix, idx, beta, L, Q):
+    _, Qdiff = perturb(idx, L, Q)
+
+    Q = Q[2*sys.N:,sys.pot_idx, :] # (2N, nnz, 4)
+    L = L[2*sys.N:] # (2N, )
+    Qdiff = Qdiff[2*sys.N:, sys.pot_idx, :] # (2N, nnz, 4)
+
+    tanhe = tanhify_eigenvalues(L, beta)
+
+    uup0: jax.Array = Q[..., 0]
+    udo0: jax.Array = Q[..., 1]
+    vup0: jax.Array = Q[..., 2]
+    vdo0: jax.Array = Q[..., 3]
+
+    # Qdiff of shape (4N, N, 4)
+    uup_diff: jax.Array = Qdiff[..., 0]
+    udo_diff: jax.Array = Qdiff[..., 1]
+    vup_diff: jax.Array = Qdiff[..., 2]
+    vdo_diff: jax.Array = Qdiff[..., 3]
+
+    res = (
+        tanhe[:, None]
+        * (
+            (udo0.conj() * vup_diff + udo_diff.conj() * vup0)
+            - (uup0.conj() * vdo_diff + uup_diff.conj() * vdo0)
+        )
+        / 2
+    )  # (4N, N)
+
+    return jnp.sum(res, axis=0) * sys.V_blk  # (nnz,)
+
+
+def jacobian(sys: BDGMatrix, L: jax.Array, Q: jax.Array, beta: float):
+    # Cannot vmap entire jacobian, as this requires nnz * N^2 memory.
+    # Scan instead (which, at any point, only requires N^2 memory)
 
     # Now, Q[n, :] is eigenvector corresponding to eigenvalue E_n
     Q = jnp.swapaxes(Q, -1, -2)
 
     # (Eigenvalue, Position, Nambu)
-    Q = jnp.reshape(Q, shape=(Q.shape[-2], N, 4))
+    Q = jnp.reshape(Q, shape=(Q.shape[-2], sys.N, 4))
 
-    uup = Q[..., 0]
-    udo = Q[..., 1]
-    vup = Q[..., 2]
-    vdo = Q[..., 3]
-
-    return (udo.conj() * vup - uup.conj() * vdo) / 2  # (Eigenvalue, Position)
+    return jax.vmap(single_index_jacobian, in_axes=(None, 0, None, None, None))(
+        sys, sys.pot_idx, beta, L, Q
+    )
 
 
 @jax.jit
-def tanhify_eigenvalues(L: jax.Array, beta):
-    # L (N), beta (float)
-    return jnp.tanh(jnp.real(beta * L / 2))
-
-
-@jax.custom_jvp
-def eigendecomp(sys: BDGMatrix, D: jax.Array, matr: jax.Array):
-    L, Q =  jnp.linalg.eigh(matr)
-
-    # Now, calculate gradients for D (not sys or matr), which is MUCH more efficient.
-    return L, Q
-
-@eigendecomp.defjvp
-def eigendecomp_gradient(primals, tangents):
-    sys, D, matr = primals
-    _, Ddot, _ = tangents
-
-    # Make this 
-
-
-@jax.jit
-def self_consistency_equation(sys: BDGMatrix, D: jax.Array, kmode: float, beta: float):
-    # 4N by 4N matrix
-    matr: jax.Array = to_dense(sys, D)
-    size = matr.shape[0]
-    N = size // 4
-
-    # Add kmode to diagonal
-    mask = jnp.tile(jnp.array([1, 1, -1, -1], dtype=jnp.complex64), N)
-    x, y = jnp.diag_indices(size)
-    matr = matr.at[x, y].add(kmode * mask)
-
-    # Do the eigenvalue decomposition
-    L, Q = jnp.linalg.eigh(matr)
-    # L, Q = my_eigh(matr)
-
-    # Perform the self-consistency
-    corr = temperature_independent_correlations(Q) # (Eigenvalue, Position) : (4N, N)
-    tanh = tanhify_eigenvalues(L, beta) # (Eigenvalue, ) : (4N,)
-    Vpot = sys.V_blk # (Position)
-
-    res = tanh[:, None] * corr[:, sys.pot_idx] * Vpot[None, :] # (Eigenvalues, nnz)
-
-    # Keep only positive eigenvalues
-    res = res[2*N:, :]
-
-    # Sum over eigenvalues
-    return jnp.sum(res, axis=0) # (nnz)
+def consistency_val_and_jac(sys: BDGMatrix, D: jax.Array, kmode: float, beta: float):
+    # Share matrix creation and diagonalisation.
+    L, Q = jnp.linalg.eigh(matrix(sys, D, kmode))
+    return consistency(sys, L, Q, beta) - D, -jacobian(sys, L, Q, beta) - jnp.eye(D.shape[0], dtype=D.dtype)

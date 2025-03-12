@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 
-@jax.jit
+# @jax.jit
 def insert_blocks(mat: jax.Array, block_indices: jax.Array, blocks: jax.Array):
     """ Returns mat with blocks inserted at block indices
 
@@ -22,6 +22,10 @@ def insert_blocks(mat: jax.Array, block_indices: jax.Array, blocks: jax.Array):
     rows = orig_pos[:, 0].repeat(row_offset.size) + jnp.tile(row_offset, num_blocks)
     cols = orig_pos[:, 1].repeat(col_offset.size) + jnp.tile(col_offset, num_blocks)
     return mat.at[rows, cols].add(blocks.flatten())
+
+
+
+# def insert_blocks_helper()
 
 @jax.jit
 def add_diagonal(mat: jax.Array, kvals: jnp.float32, mask: jax.Array):

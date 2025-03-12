@@ -3,7 +3,8 @@ import jax.numpy as jnp
 import jax
 from bdg import (
     BDGMatrix,
-    self_consistency_equation
+    self_consistency_equation,
+    consistency_val_and_jac
 )
 from typing import Union, Iterable
 
@@ -144,13 +145,12 @@ class Hamiltonian:
             self.H_idx, self.H_blk, self.V_idx, self.V_blk, N=self.lat.size()
         )
 
-        results = []
 
         def forward(x):
             # x of shape (temp, batch, nnz)
 
             # vmap over batch dimension of x and kmodes
-            batch_fn = jax.vmap(self_consistency_equation,in_axes=(None, 0, 0, None))
+            batch_fn = jax.vmap(consistency_val_and_jac,in_axes=(None, 0, 0, None))
 
             # vmap over temp dimension of x and beta
             temp_fn = jax.vmap(batch_fn, in_axes=(None, 0, None, 0))
@@ -162,20 +162,25 @@ class Hamiltonian:
         x0 = jnp.ones(
             (beta.size, self.num_kmodes, matr.pot_idx.size), dtype=jnp.complex64
         )  # (Temp, Batch, Pos)
-        for it in range(100):
-            xn = func(x0)
+        for it in range(20):
+            fn, jac = func(x0)
+
+            # print(fn.shape, jac.shape)
 
 
-            diff_delta = jnp.mean(xn - x0, axis=1) # (temp, nnz)
-            res = jnp.linalg.norm(diff_delta, axis=-1)
+            # print(jac.squeeze((0, 1)).real)
+
+            res = jnp.linalg.norm(fn, axis=-1)
+
+            print(jnp.sum(jnp.where(res < 1e-10, 1, 0)) / res.size)
             print(jnp.mean(res))
-            if jnp.mean(res) < 1e-3:
+            if jnp.mean(res) < 1e-10:
 
-                return jnp.mean(xn, axis=1) # (temp, nnz)
+                break  # (temp, nnz)
 
-            x0 = xn
+            x0 = x0 - jnp.linalg.solve(jac, fn[..., None]).squeeze(-1)
 
-        return []
+        return jnp.mean(x0, axis=1)
 
 
 # NamedTuple to be a pytree. This is a custom sparse representation of a BDG Matrix
@@ -190,21 +195,21 @@ def main():
     sigma0 = jnp.array([[1, 0], [0, 1]], dtype=jnp.complex64)
 
     # Create system
-    lat = CubicLattice(1, 1, 100)
+    lat = CubicLattice(1, 1, 50)
     ham = Hamiltonian(lat, [101])
     mu = 0.0
-    V = 0.8
+    V = 0.9
     ham.add_H(lambda i, j: [jnp.all(i == j)], lambda i, j: [-mu * sigma0])
     ham.add_H(lambda i, j: [jnp.any(i != j)], lambda i, j: [-sigma0])
-    ham.add_V(lambda i, j: [jnp.all(i == j), i[2] < 50], lambda i, j: [-V])
+    ham.add_V(lambda i, j: [jnp.all(i == j), i[2] < 25], lambda i, j: [-V])
 
     # ham.add_H()
 
     temps = jnp.linspace(0, 0.03, 3)
-    temps = [0.0]
+    # temps = [0.0]
     res = ham.solve(temps)
 
-    print()
+    print(res.shape)
     for x, t in zip(res, temps):
         print(x.shape)
         print(x)
