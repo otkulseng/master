@@ -3,6 +3,8 @@ import jax.numpy as jnp
 from util import insert_blocks
 from typing import NamedTuple
 from bdg import make_bdg_H_term, make_bdg_D_term
+from optimization import broydenb2
+
 jax.config.update("jax_enable_x64", True)
 
 
@@ -85,8 +87,6 @@ def empty_matrix(sys: CubicLattice):
     return jnp.zeros((4 * N, 4 * N), dtype=jnp.complex128)
 
 
-
-
 def bdg_add_H(matr: jax.Array, l: jax.Array, r: jax.Array, val: jax.Array):
     """_summary_
 
@@ -161,9 +161,8 @@ def consistency(L, Q, idx, V, t):
     return jnp.sum(res, axis=0)  # (nnz)
 
 
-def jacobian_both(L: jax.Array, Q: jax.Array, idx: jax.Array, V, t):
-    eps = 1e-8
-    K = eps * jnp.array(
+def jacobian(L: jax.Array, Q: jax.Array, idx: jax.Array, V, t):
+    K = jnp.array(
         [
             [0, 0, 0, 1],
             [0, 0, -1, 0],
@@ -178,34 +177,64 @@ def jacobian_both(L: jax.Array, Q: jax.Array, idx: jax.Array, V, t):
 
     out = jnp.zeros((nnz, nnz), dtype=jnp.complex128)
 
-
-    p0 = consistency(L, Q, idx, V, t)
+    # p0 = consistency(L, Q, idx, V, t)
 
     Q = Q.transpose((-1, -2))
-    Q_b = Q.reshape((size, N, 4))[:, idx, :] # (4N, nnz, 4)
+    Q_b = Q.reshape((size, N, 4))[:, idx, :]  # (4N, nnz, 4)
 
-    denom = jnp.expand_dims(L, -2) - jnp.expand_dims(L, -1)
+    denom = jnp.expand_dims(L, -1) - jnp.expand_dims(L, -2)
     denom = jnp.where(jnp.abs(denom) < 1e-10, jnp.inf, denom)
 
+    tanh = tanhify_eigenvalues(L, 1 / (1e-10 + t))  # (Eigenvalue, ) : (4N,)
+
+    Qouter = jnp.reshape(Q, shape=(Q.shape[-2], N, 4))
+
+    uup0 = Qouter[..., 0]
+    udo0 = Qouter[..., 1]
+    vup0 = Qouter[..., 2]
+    vdo0 = Qouter[..., 3]
     for j in range(nnz):
         # Step 1, calculate change in L and Q using perturbation theory
         cur = Q_b[:, j, :]
         numerator = cur.conj() @ K @ cur.T
 
-        Ldiff = jnp.diagonal(numerator)
+        # Ldiff = jnp.diagonal(numerator)
 
         factor = numerator / denom
 
         Qdiff = jnp.einsum("ij, ik->jk", factor, Q)
 
-        p = consistency(L + Ldiff, (Q + Qdiff).transpose((-1, -2)), idx, V, t)
+        # (Eigenvalue, Position, Nambu)
+        Qinner = jnp.reshape(Qdiff, shape=(Q.shape[-2], N, 4))
 
-        out = out.at[j].set((p - p0)/eps)
-    return p0, -out
+        uup = Qinner[..., 0]
+        udo = Qinner[..., 1]
+        vup = Qinner[..., 2]
+        vdo = Qinner[..., 3]
+
+        # corr = ((udo0 + udo).conj() * (vup0 + vup) - (uup0 + uup).conj() * (vdo0 + vdo)) / 2
+
+        A = udo0.conj() * vup + udo.conj() * vup0
+        B = uup0.conj() * vdo + uup.conj() * vdo0
+        corr = (A - B) / 2
+
+        res: jax.Array = tanh[:, None] * corr[:, idx] * V[None, :]  # (Eigenvalues, nnz)
+
+        # Keep only positive eigenvalues
+        size = res.shape[0]
+        res = res[size // 2 :, :]
+
+        # Sum over eigenvalues
+        p = jnp.sum(res, axis=0)  # (nnz)
+
+        # p = consistency(L, (Q + Qdiff).transpose((-1, -2)), idx, V, t)
+
+        out = out.at[j].set(p)
+    return out
 
 
 def jacobianv1(L: jax.Array, Q: jax.Array, idx: jax.Array, V, t):
-    K =  jnp.array(
+    K = jnp.array(
         [
             [0, 0, 0, 1],
             [0, 0, -1, 0],
@@ -220,48 +249,48 @@ def jacobianv1(L: jax.Array, Q: jax.Array, idx: jax.Array, V, t):
 
     out = jnp.zeros((nnz, nnz), dtype=jnp.complex128)
 
-    Q = Q.transpose((-1, -2)) # Now, Q[Eigenvalue, Vector] : (4N, 4N)
+    Q = Q.transpose((-1, -2))  # Now, Q[Eigenvalue, Vector] : (4N, 4N)
     Q_smaller = Q.reshape((size, N, 4))[:, idx, :]
 
-    uup_0 = Q_smaller[-2*N, :, 0] # (2N, nnz)
-    udo_0 = Q_smaller[-2*N, :, 1]
-    vup_0 = Q_smaller[-2*N, :, 2]
-    vdo_0 = Q_smaller[-2*N, :, 3]
-
+    uup_0 = Q_smaller[-2 * N, :, 0]  # (2N, nnz)
+    udo_0 = Q_smaller[-2 * N, :, 1]
+    vup_0 = Q_smaller[-2 * N, :, 2]
+    vdo_0 = Q_smaller[-2 * N, :, 3]
 
     denom = jnp.expand_dims(L, -2) - jnp.expand_dims(L, -1)
     denom = jnp.where(jnp.abs(denom) < 1e-10, jnp.inf, denom)
 
-    tanhe = tanhify_eigenvalues(L[-2*N:], 1/(1e-10 + t))
+    tanhe = tanhify_eigenvalues(L[-2 * N :], 1 / (1e-10 + t))
 
     for i in range(nnz):
         # calculate this row-wise
         # Step 1, how does the eigenvectors change
         # Q of shape (4N, N, 4). Last N4 elements are the actual vectors
         Q_cur = Q_smaller[:, i, :]
-        factor = Q_cur.conj() @ K @ Q_cur.T / denom # (4N, 4N)
+        factor = Q_cur.conj() @ K @ Q_cur.T / denom  # (4N, 4N)
 
-
-        Q_diff = factor.T @ Q # (4N, 4N)
+        Q_diff = factor.T @ Q  # (4N, 4N)
         # print(Q_diff)
 
-        Q_diff = Q_diff.reshape(size, N, 4)[-2*N:, idx, :]
+        Q_diff = Q_diff.reshape(size, N, 4)[-2 * N :, idx, :]
         uup_diff = Q_diff[..., 0]
         udo_diff = Q_diff[..., 1]
         vup_diff = Q_diff[..., 2]
         vdo_diff = Q_diff[..., 3]
 
-        res = jnp.sum( # First has shape (2N, nnz) * (2N, None) * (None, nnz)
+        res = jnp.sum(  # First has shape (2N, nnz) * (2N, None) * (None, nnz)
             (
                 (udo_0.conj() * vup_diff + udo_diff.conj() * vup_0)
                 - (uup_0.conj() * vdo_diff + uup_diff.conj() * vdo_0)
-            ) / 2 * tanhe[:, None] * V[None, :], axis=0
+            )
+            / 2
+            * tanhe[:, None]
+            * V[None, :],
+            axis=0,
         )
 
         out = out.at[i].set(res)
     return -out
-
-
 
 
 def jacobianv0(L: jax.Array, Q: jax.Array, idx: jax.Array, V, t):
@@ -298,7 +327,7 @@ def jacobianv0(L: jax.Array, Q: jax.Array, idx: jax.Array, V, t):
     vup_0 = Q_nnz[-2 * N :, :, 2]
     vdo_0 = Q_nnz[-2 * N :, :, 3]
 
-    tanhe = tanhify_eigenvalues(L[-2*N:], 1/(1e-10 + t))
+    tanhe = tanhify_eigenvalues(L[-2 * N :], 1 / (1e-10 + t))
 
     for i in range(nnz):
         cur_Q = Q_nnz[:, i, :]  # (4N, 4)
@@ -314,16 +343,21 @@ def jacobianv0(L: jax.Array, Q: jax.Array, idx: jax.Array, V, t):
         vup_diff = Q_diff[..., 2]
         vdo_diff = Q_diff[..., 3]
 
-        res = jnp.sum( # First has shape (2N, nnz) * (2N, None) * (None, nnz)
+        res = jnp.sum(  # First has shape (2N, nnz) * (2N, None) * (None, nnz)
             (
                 (udo_0.conj() * vup_diff + udo_diff.conj() * vup_0)
                 - (uup_0.conj() * vdo_diff + uup_diff.conj() * vdo_0)
-            ) / 2 * tanhe[:, None] * V[None, :], axis=0
+            )
+            / 2
+            * tanhe[:, None]
+            * V[None, :],
+            axis=0,
         )
 
         out = out.at[i].set(res)
 
     return out
+
 
 def cartesian_product(*arrays):
     grids = jnp.meshgrid(*arrays, indexing="ij")
@@ -331,7 +365,7 @@ def cartesian_product(*arrays):
 
 
 # @jax.jit
-def order_parameters(lat: CubicLattice, mu, k, V, t, max_iter=50, eps=1e-10):
+def order_parameters(lat: CubicLattice, mu, k, V, t, max_iter=50, eps=1e-7):
     """_summary_
 
     Args:
@@ -381,14 +415,10 @@ def order_parameters(lat: CubicLattice, mu, k, V, t, max_iter=50, eps=1e-10):
         L, Q = jnp.linalg.eigh(matr)
 
         V0 = jnp.array([V0])
+        xnext = consistency(L, Q, delta_indices, V0, t0)
+        jac = jacobian(L, Q, delta_indices, V0, t0)
 
-        xnext, jac = jacobian_both(L, Q, delta_indices, V0, t0)
-
-        fx = xnext - x
-
-        fjac = jac - jnp.eye(delta_indices.shape[0], dtype=x.dtype)
-
-        return jnp.linalg.solve(fjac, fx)
+        return xnext - x, jac - jnp.eye(delta_indices.shape[0], dtype=x.dtype)
 
         # return jacobian_both(L, Q, delta_indices, V0, t0)
 
@@ -398,71 +428,88 @@ def order_parameters(lat: CubicLattice, mu, k, V, t, max_iter=50, eps=1e-10):
 
     vmap_iteration_step = jax.jit(jax.vmap(iteration_step))
 
-    # Get all the tuples of mu, k, V and t we are considering
+    def forward_mask(x, mask=None):
+        if mask is None:
+            mask = jnp.ones(x.shape[0], dtype=bool)
+        return vmap_iteration_step(x[mask, :], *tuples[mask, :].T)
+
+    def solve(tuples: jax.Array, x0: jax.Array):
+        def forward(x):
+            fx, jx = vmap_iteration_step(x, *tuples.T)
+            return jnp.linalg.solve(jx, fx[..., None]).squeeze(-1)
+
+        return broydenb2(forward, x0)
+
     tuples = cartesian_product(mu, k, V, t)
+    x0 = jnp.ones((tuples.shape[0], delta_sites.shape[0]), dtype=jnp.complex128)
 
-    # TODO: Add MPI here to divide these tuples
-    # TODO: Limit memory usage if too many requests
+    return solve(tuples, x0)
+    assert False
 
-    @jax.jit
-    def cond_func(state):
-        i, x, done = state
-        return (i < max_iter) & ~jnp.all(done)
+    # # Get all the tuples of mu, k, V and t we are considering
 
-    def body_func(state):
-        i, x, done = state
+    # # TODO: Add MPI here to divide these tuples
+    # # TODO: Limit memory usage if too many requests
 
-        mask = ~done
-        x_cur = x[mask, :]
+    # @jax.jit
+    # def cond_func(state):
+    #     i, x, done = state
+    #     return (i < max_iter) & ~jnp.all(done)
 
-        fx, Jx = vmap_iteration_step(
-            x_cur, tuples[mask, 0], tuples[mask, 1], tuples[mask, 2], tuples[mask, 3]
-        )
+    # def body_func(state):
+    #     i, x, done = state
 
+    #     mask = ~done
 
-        norm = jnp.linalg.norm(fx, axis=-1)
-        new_done = norm < eps
-        print(jnp.mean(norm), jnp.mean(done), jnp.sum(done))
+    #     fx, Jx = forward(x, mask)
 
-        done = done.at[mask].set(new_done)
+    #     norm = jnp.linalg.norm(fx, axis=-1)
+    #     new_done = norm < eps
+    #     print(jnp.mean(norm), jnp.mean(done), jnp.sum(done))
 
-        dx = x_cur - jnp.linalg.solve(Jx, fx[..., None]).squeeze(-1)  # of size mask
+    #     done = done.at[mask].set(new_done)
 
-        x_next = x.at[mask].set(dx)
-        # x_next = fx
-        return i + 1, x_next, done
+    #     dx = - jnp.linalg.solve(Jx, fx[..., None]).squeeze(-1)  # of size mask
 
-    done0 = jnp.zeros(tuples.shape[0], dtype=bool)
-    init_val = (
-        0,
-        jnp.ones((done0.size, delta_indices.size), dtype=jnp.complex128),
-        done0,
-    )
-    val = init_val
-    while cond_func(val):
-        val = body_func(val)
+    #     x_next = x.at[mask].add(dx)
+    #     # x_next = fx
+    #     return i + 1, x_next, done
 
+    # done0 = jnp.zeros(tuples.shape[0], dtype=bool)
+    # init_val = (
+    #     0,
+    #     jnp.ones((done0.size, delta_indices.size), dtype=jnp.complex128),
+    #     done0,
+    # )
+    # val = init_val
+    # while cond_func(val):
+    #     val = body_func(val)
 
-    return val
+    # return val
 
 
 def main():
     sys = CubicLattice((100, 1, 1), (True, False, False))
 
-    N = 201
-    its, matr, done  = order_parameters(
+    N = 5
+    num_temp = 5
+    x, aux = order_parameters(
         sys,
         mu=jnp.array([0.05]),
-        k=jnp.pi * (2 * jnp.arange(N) + 1) / (2*N),
+        k=jnp.pi * (2 * jnp.arange(N) + 1) / (2 * N),
         V=jnp.array([0.7]),
-        t=jnp.array([0.0]),
+        # t =jnp.array([0.0])
+        t=jnp.linspace(0.0, 0.01, num_temp),
     )
-
-    matr = matr.reshape((N, -1)).mean(0)
+    print(f"Number of iterations: {aux.iterations}")
+    matr = x.reshape((N, num_temp, -1)).mean(0)
 
     import matplotlib.pyplot as plt
-    plt.plot(matr)
-    plt.savefig('temp.pdf')
+
+    for i in range(num_temp):
+        plt.plot(matr[i, :], label=f"{i}")
+    plt.legend()
+    plt.savefig("temp.pdf")
 
     print(matr)
     print(matr.shape)
