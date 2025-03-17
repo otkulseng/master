@@ -4,6 +4,11 @@ from util import insert_blocks
 from typing import NamedTuple
 from bdg import make_bdg_H_term, make_bdg_D_term
 from optimization import broydenb2
+# from mpi4py import MPI
+
+
+import storage
+from tqdm import tqdm
 
 jax.config.update("jax_enable_x64", True)
 
@@ -233,139 +238,13 @@ def jacobian(L: jax.Array, Q: jax.Array, idx: jax.Array, V, t):
     return out
 
 
-def jacobianv1(L: jax.Array, Q: jax.Array, idx: jax.Array, V, t):
-    K = jnp.array(
-        [
-            [0, 0, 0, 1],
-            [0, 0, -1, 0],
-            [0, -1, 0, 0],
-            [1, 0, 0, 0],
-        ],
-        dtype=Q.dtype,
-    )
-    size = L.shape[0]
-    N = size // 4
-    nnz = idx.shape[0]
-
-    out = jnp.zeros((nnz, nnz), dtype=jnp.complex128)
-
-    Q = Q.transpose((-1, -2))  # Now, Q[Eigenvalue, Vector] : (4N, 4N)
-    Q_smaller = Q.reshape((size, N, 4))[:, idx, :]
-
-    uup_0 = Q_smaller[-2 * N, :, 0]  # (2N, nnz)
-    udo_0 = Q_smaller[-2 * N, :, 1]
-    vup_0 = Q_smaller[-2 * N, :, 2]
-    vdo_0 = Q_smaller[-2 * N, :, 3]
-
-    denom = jnp.expand_dims(L, -2) - jnp.expand_dims(L, -1)
-    denom = jnp.where(jnp.abs(denom) < 1e-10, jnp.inf, denom)
-
-    tanhe = tanhify_eigenvalues(L[-2 * N :], 1 / (1e-10 + t))
-
-    for i in range(nnz):
-        # calculate this row-wise
-        # Step 1, how does the eigenvectors change
-        # Q of shape (4N, N, 4). Last N4 elements are the actual vectors
-        Q_cur = Q_smaller[:, i, :]
-        factor = Q_cur.conj() @ K @ Q_cur.T / denom  # (4N, 4N)
-
-        Q_diff = factor.T @ Q  # (4N, 4N)
-        # print(Q_diff)
-
-        Q_diff = Q_diff.reshape(size, N, 4)[-2 * N :, idx, :]
-        uup_diff = Q_diff[..., 0]
-        udo_diff = Q_diff[..., 1]
-        vup_diff = Q_diff[..., 2]
-        vdo_diff = Q_diff[..., 3]
-
-        res = jnp.sum(  # First has shape (2N, nnz) * (2N, None) * (None, nnz)
-            (
-                (udo_0.conj() * vup_diff + udo_diff.conj() * vup_0)
-                - (uup_0.conj() * vdo_diff + uup_diff.conj() * vdo_0)
-            )
-            / 2
-            * tanhe[:, None]
-            * V[None, :],
-            axis=0,
-        )
-
-        out = out.at[i].set(res)
-    return -out
-
-
-def jacobianv0(L: jax.Array, Q: jax.Array, idx: jax.Array, V, t):
-    K = jnp.array(
-        [
-            [0, 0, 0, 1],
-            [0, 0, -1, 0],
-            [0, -1, 0, 0],
-            [1, 0, 0, 0],
-        ],
-        dtype=Q.dtype,
-    )
-
-    size = L.shape[0]
-    N = size // 4
-    nnz = idx.shape[0]
-
-    Q = Q.transpose((-1, -2)).reshape(
-        size, N, 4
-    )  # Now, Q[n, :] is eigenvector corresponding to L[n]
-
-    # Need to calculate each perturbation multiplication
-    Q_nnz = Q[:, idx, :]  # (4N, nnz, 4)
-
-    K_Q_nnz = jnp.einsum("ijk, kl->lji", Q_nnz, K)  # (4, nnz, 4N)
-
-    denom = jnp.expand_dims(L, -1) - jnp.expand_dims(L, -2)
-    denom = jnp.where(jnp.abs(denom) < 1e-10, jnp.inf, denom)
-
-    out = jnp.zeros((nnz, nnz), dtype=Q.dtype)
-
-    uup_0 = Q_nnz[-2 * N :, :, 0]
-    udo_0 = Q_nnz[-2 * N :, :, 1]
-    vup_0 = Q_nnz[-2 * N :, :, 2]
-    vdo_0 = Q_nnz[-2 * N :, :, 3]
-
-    tanhe = tanhify_eigenvalues(L[-2 * N :], 1 / (1e-10 + t))
-
-    for i in range(nnz):
-        cur_Q = Q_nnz[:, i, :]  # (4N, 4)
-        cur_K_Q_nnz = K_Q_nnz[:, i, :]  # (4, 4N)
-        Q_K_Q = jnp.matmul(cur_Q.conj(), cur_K_Q_nnz)  # (4N, 4N)
-        Q_K_Q = Q_K_Q / denom  # (4N, 4N)
-
-        Q_diff = jnp.einsum("ij, jkl -> ikl", Q_K_Q, Q_nnz)[
-            -2 * N :, :, :
-        ]  # (2N, nnz, 4)
-        uup_diff = Q_diff[..., 0]
-        udo_diff = Q_diff[..., 1]
-        vup_diff = Q_diff[..., 2]
-        vdo_diff = Q_diff[..., 3]
-
-        res = jnp.sum(  # First has shape (2N, nnz) * (2N, None) * (None, nnz)
-            (
-                (udo_0.conj() * vup_diff + udo_diff.conj() * vup_0)
-                - (uup_0.conj() * vdo_diff + uup_diff.conj() * vdo_0)
-            )
-            / 2
-            * tanhe[:, None]
-            * V[None, :],
-            axis=0,
-        )
-
-        out = out.at[i].set(res)
-
-    return out
-
-
 def cartesian_product(*arrays):
     grids = jnp.meshgrid(*arrays, indexing="ij")
     return jnp.stack(grids, axis=-1).reshape(-1, len(arrays))
 
 
 # @jax.jit
-def order_parameters(lat: CubicLattice, mu, k, V, t, max_iter=50, eps=1e-7):
+def order_parameters(lat: CubicLattice, r, k, t, mu, V, m):
     """_summary_
 
     Args:
@@ -381,17 +260,24 @@ def order_parameters(lat: CubicLattice, mu, k, V, t, max_iter=50, eps=1e-7):
     sites = lattice_sites(lat)  # (N, 3)
     bonds = lattice_bonds(lat)  # (N, 2, 3)
 
-    delta_sites = sites[sites[:, 0] < Nx // 2]
+    delta_sites = sites[jnp.logical_or(sites[:, 1] == 1,sites[:, 1] == 2)]
 
     sigma0 = jnp.array([[1, 0], [0, 1]], dtype=jnp.complex128)
+    sigmax = jnp.array([[0, 1], [1, 0]], dtype=jnp.complex128)
+
 
     site_indices = lattice_index(lat, sites)
     delta_indices = lattice_index(lat, delta_sites)
     bonds_l_indices = lattice_index(lat, bonds[:, 0, :])
     bonds_r_indices = lattice_index(lat, bonds[:, 1, :])
 
+    top_layer_sites = lattice_index(lat, sites[sites[:, 1] == 3])
+    bottom_layer_sites = lattice_index(lat, sites[sites[:, 1] == 0])
+
+
+    r_sites = lattice_index(lat, sites[jnp.logical_and(sites[:, 1] == 0, sites[:, 0] < r)])
     # @jax.jit
-    def iteration_step(x, mu0, k0, V0, t0):
+    def matrix(x, k0, mu0, m0):
         # Create empty matrix (zeros) of the correct size
         matr = empty_matrix(lat)
 
@@ -399,6 +285,21 @@ def order_parameters(lat: CubicLattice, mu, k, V, t, max_iter=50, eps=1e-7):
         matr = bdg_add_H(
             matr, bonds_l_indices, bonds_r_indices, -1.0 * sigma0[None, ...]
         )  # Broadcast
+
+        # Add top layer magnetic field
+        matr = bdg_add_H(
+            matr, top_layer_sites, top_layer_sites , -m0 * sigmax[None, ...]
+        )
+
+        # Add bottom layer magnetic field
+        matr = bdg_add_H(
+            matr, bottom_layer_sites, bottom_layer_sites , +m0 * sigmax[None, ...]
+        )
+
+        # Add r-dependence
+        matr = bdg_add_H(
+            matr, r_sites, r_sites , -2*m0 * sigmax[None, ...]
+        )
 
         # Add k-val and mu
         matr = bdg_add_H(
@@ -412,7 +313,32 @@ def order_parameters(lat: CubicLattice, mu, k, V, t, max_iter=50, eps=1e-7):
         matr = bdg_add_D(matr, delta_indices, delta_indices, -x)
 
         # Diagonalize
-        L, Q = jnp.linalg.eigh(matr)
+        return matr
+
+    def free_energy(x, k0, t0, mu0, V0, m0):
+        L = jnp.linalg.eigvalsh(matrix(x,  k0, mu0, m0))
+
+        # Keep only positive
+        L = L[L.shape[0] // 2 :]
+
+        # Superconducting contribution
+        E0 = jnp.sum(x.conj() * x / V0)
+
+        # Non-entropic contribution
+        H0 = -1 / 2 * jnp.sum(L)
+
+        # Entropy
+        S = jnp.sum(jnp.log(1 + jnp.exp(-(1 / (1e-10 + t0)) * L)))
+
+        return jnp.real(E0 + H0 - t0 * S)
+
+    def condensation_energy(x, k0, t0, mu0, V0, m0):
+        return free_energy(x, k0, t0, mu0, V0, m0) - free_energy(
+            jnp.zeros_like(x), k0, t0, mu0, V0, m0
+        )
+
+    def iteration_step(x, k0, t0, mu0, V0, m0):
+        L, Q = jnp.linalg.eigh(matrix(x, k0, mu0, m0))
 
         V0 = jnp.array([V0])
         xnext = consistency(L, Q, delta_indices, V0, t0)
@@ -420,99 +346,84 @@ def order_parameters(lat: CubicLattice, mu, k, V, t, max_iter=50, eps=1e-7):
 
         return xnext - x, jac - jnp.eye(delta_indices.shape[0], dtype=x.dtype)
 
-        # return jacobian_both(L, Q, delta_indices, V0, t0)
-
-        # return consistency(L, Q, delta_indices, V0, t0) - x, jacobian(
-        #     L, Q, delta_indices, V0, t0
-        # )
-
     vmap_iteration_step = jax.jit(jax.vmap(iteration_step))
 
-    def forward_mask(x, mask=None):
-        if mask is None:
-            mask = jnp.ones(x.shape[0], dtype=bool)
-        return vmap_iteration_step(x[mask, :], *tuples[mask, :].T)
+    vmap_condensation_energy = jax.jit(jax.vmap(condensation_energy))
 
-    def solve(tuples: jax.Array, x0: jax.Array):
+
+    def solve(tuples: jax.Array):
+        x0 = jnp.ones((tuples.shape[0], delta_sites.shape[0]), dtype=jnp.complex128)
+
         def forward(x):
             fx, jx = vmap_iteration_step(x, *tuples.T)
             return jnp.linalg.solve(jx, fx[..., None]).squeeze(-1)
 
-        return broydenb2(forward, x0)
+        res = broydenb2(forward, x0)
+        storage.store(["order_params", "tol", "points"], [res.x, res.fx, tuples])
 
-    tuples = cartesian_product(mu, k, V, t)
-    x0 = jnp.ones((tuples.shape[0], delta_sites.shape[0]), dtype=jnp.complex128)
+        B, _ = tuples.shape
+        cond_energy = vmap_condensation_energy(res.x, *tuples.T).reshape((B, 1))
+        combined = jnp.concatenate([tuples, jnp.ones_like(cond_energy)*r, cond_energy], axis=-1)
 
-    return solve(tuples, x0)
-    assert False
+        storage.store(['condensation_energy'], [combined])
 
-    # # Get all the tuples of mu, k, V and t we are considering
+    tuples = cartesian_product(k, t, mu, V, m)
 
-    # # TODO: Add MPI here to divide these tuples
-    # # TODO: Limit memory usage if too many requests
+    # Only keep the tuples corresponding to this rank
+    # comm = MPI.COMM_WORLD
+    # size = comm.Get_size()
+    # rank = comm.Get_rank()
+    # tuples = tuples[rank::size]
 
-    # @jax.jit
-    # def cond_func(state):
-    #     i, x, done = state
-    #     return (i < max_iter) & ~jnp.all(done)
+    # asd = [i for i in range(100)]
 
-    # def body_func(state):
-    #     i, x, done = state
+    # n_tasks = 10
+    # n_cpu_per_task = 10
 
-    #     mask = ~done
-
-    #     fx, Jx = forward(x, mask)
-
-    #     norm = jnp.linalg.norm(fx, axis=-1)
-    #     new_done = norm < eps
-    #     print(jnp.mean(norm), jnp.mean(done), jnp.sum(done))
-
-    #     done = done.at[mask].set(new_done)
-
-    #     dx = - jnp.linalg.solve(Jx, fx[..., None]).squeeze(-1)  # of size mask
-
-    #     x_next = x.at[mask].add(dx)
-    #     # x_next = fx
-    #     return i + 1, x_next, done
-
-    # done0 = jnp.zeros(tuples.shape[0], dtype=bool)
-    # init_val = (
-    #     0,
-    #     jnp.ones((done0.size, delta_indices.size), dtype=jnp.complex128),
-    #     done0,
-    # )
-    # val = init_val
-    # while cond_func(val):
-    #     val = body_func(val)
-
-    # return val
+    batch_size = 100
+    for i in tqdm(range(0, len(tuples), batch_size)):
+        min_idx = i
+        max_idx = min(i + batch_size, len(tuples))
+        try:
+            solve(tuples[min_idx:max_idx])
+        except KeyboardInterrupt:
+            break
+        except Exception as e:
+            print(e)
+            continue
 
 
 def main():
-    sys = CubicLattice((100, 1, 1), (True, False, False))
 
-    N = 5
-    num_temp = 5
-    x, aux = order_parameters(
-        sys,
-        mu=jnp.array([0.05]),
-        k=jnp.pi * (2 * jnp.arange(N) + 1) / (2 * N),
-        V=jnp.array([0.7]),
-        # t =jnp.array([0.0])
-        t=jnp.linspace(0.0, 0.01, num_temp),
-    )
-    print(f"Number of iterations: {aux.iterations}")
-    matr = x.reshape((N, num_temp, -1)).mean(0)
+    sys = CubicLattice((25, 4, 1), (True, False, False))
+    storage.init("neel")
 
-    import matplotlib.pyplot as plt
+    # 200 per cpu time, 2000 per time x 60 rekker ca 100000
+    N = 100
+    for r0 in [1, 0, 2, 3]:
+        x = order_parameters(
+            sys,
+            r = r0,
+            k=jnp.pi * (2 * jnp.arange(N) + 1) / (2 * N),
+            t=jnp.linspace(0.0, 0.05, 50),
+            # mu=jnp.linspace(0.0, 0.5, num_temp),
+            mu = jnp.linspace(0.0, 0.2, 4),
+            # V=jnp.linspace(0.4, 0.8, num_temp),
+            V = jnp.linspace(0.4, 0.8, 4),
+            m=jnp.array([0.1]),
+        )
+    # print(f"Number of iterations: {aux.iterations}")
+    # matr = x.reshape((N, num_temp, -1)).mean(0)
 
-    for i in range(num_temp):
-        plt.plot(matr[i, :], label=f"{i}")
-    plt.legend()
-    plt.savefig("temp.pdf")
+    # import matplotlib.pyplot as plt
 
-    print(matr)
-    print(matr.shape)
+    # for i in range(num_temp):
+    #     plt.plot(matr[i, :], label=f"{i}")
+    # plt.legend()
+    # plt.savefig("temp.pdf")
+
+    # print(matr)
+    # print(matr.shape)
 
 
 if __name__ == "__main__":
