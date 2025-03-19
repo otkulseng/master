@@ -400,11 +400,11 @@ def order_parameters(lat: CubicLattice, r, k, t, mu, V, m):
 def main():
 
     sys = CubicLattice((25, 3, 1), (True, False, False))
-    storage.init("neel2")
+    storage.init("neel3")
 
     # 200 per cpu time, 2000 per time x 60 rekker ca 100000
-    N = 100
-    for r0 in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]:
+    N = 50
+    for r0 in [0, 1, 2]:
         x = order_parameters(
             sys,
             r = r0,

@@ -14,8 +14,8 @@ def stable_newton(func, x0, eps=1e-10, max_iter=100):
 
     # First, do 5
 
-    for it in range(max_iter):
-        x, fx = 
+    # for it in range(max_iter):
+    #     x, fx = None, None
 
     def cond_func(state):
         i, x, _, done = state
@@ -30,7 +30,7 @@ def stable_newton(func, x0, eps=1e-10, max_iter=100):
         new_done = norm < eps
         print(i, jnp.mean(norm), jnp.mean(done))
 
-        dx = - jnp.linalg.solve(jx, fx[..., None]).squeeze(-1)
+        dx = - 0.5 * jnp.linalg.solve(jx, fx[..., None]).squeeze(-1)
         # xn = x
 
         done = done.at[mask].set(new_done)
