@@ -1,0 +1,27 @@
+
+
+
+
+1e-2
+1e-3
+1e-4
+
+
+feil ved it = i er proporsjonal med 1/10
+
+
+
+e_{n+1} ~ e_{n}^p
+
+
+p = 1
+
+p = (1, 2)
+
+p = 2
+
+1e-1
+1e-2
+1e-4
+1e-8
+1e-16

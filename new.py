@@ -356,19 +356,19 @@ def order_parameters(lat: CubicLattice, r, k, t, mu, V, m):
 
         def forward(x, mask):
             tup = tuples[mask]
-            return vmap_iteration_step(x[mask], *tup.T)
+            return vmap_iteration_step(x, *tup.T)
 
             # return jnp.linalg.solve(jx, fx[..., None]).squeeze(-1)
 
         # forw = jax.jit(forward)
 
-        res = stable_newton(forward, x0, max_iter=50)
+        res = stable_newton(forward, x0, max_iter=100)
         storage.store(["order_params", "tol", "points"], [res.x, res.fx, tuples])
-
         B, _ = tuples.shape
+
+        print("Calculating condensation energy")
         cond_energy = vmap_condensation_energy(res.x, *tuples.T).reshape((B, 1))
         combined = jnp.concatenate([tuples, jnp.ones_like(cond_energy)*r, cond_energy], axis=-1)
-
         storage.store(['condensation_energy'], [combined])
 
     tuples = cartesian_product(k, t, mu, V, m)
@@ -385,11 +385,13 @@ def order_parameters(lat: CubicLattice, r, k, t, mu, V, m):
     # n_cpu_per_task = 10
 
     batch_size = 100
+
     for i in tqdm(range(0, len(tuples), batch_size)):
         min_idx = i
         max_idx = min(i + batch_size, len(tuples))
         try:
             solve(tuples[min_idx:max_idx])
+            jax.clear_caches()
         except KeyboardInterrupt:
             break
         except Exception as e:
@@ -399,18 +401,27 @@ def order_parameters(lat: CubicLattice, r, k, t, mu, V, m):
 
 def main():
 
-    sys = CubicLattice((25, 3, 1), (True, False, False))
-    storage.init("neel3")
+    sys = CubicLattice((30, 3, 1), (True, False, False))
+    storage.init("other30")
 
     # 200 per cpu time, 2000 per time x 60 rekker ca 100000
-    N = 50
-    for r0 in [0, 1, 2]:
+
+    # 100 temps
+    # 100 diag_vals
+    # 10 000 values that I must have
+    # In 10000 hours, I can solve at least 1 000 000, if not a lot more (?)
+    # which means 10 000 divided through
+    # V, m and r0
+    # r0 = 30 vals
+    # 
+    N = 30
+    for r0 in [0, 1]:
         x = order_parameters(
             sys,
             r = r0,
             k=jnp.pi * (2 * jnp.arange(N) + 1) / (2 * N),
             # t=jnp.linspace(0.0, 0.05, 50),
-            t = jnp.array([0.0]),
+            t = jnp.linspace(0, 0.05, N),
             # mu = jnp.linspace(0.0, 0.2, 4),
             mu = jnp.array([0.1]),
             V = jnp.array([0.8]),
@@ -418,6 +429,8 @@ def main():
             # V = jnp.linspace(0.4, 0.8, 4),
             m=jnp.array([0.1]),
         )
+
+
     # print(f"Number of iterations: {aux.iterations}")
     # matr = x.reshape((N, num_temp, -1)).mean(0)
 

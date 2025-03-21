@@ -24,9 +24,11 @@ class Storage:
     def save(self, name: str, arr: np.ndarray):
 
         if name not in self.experiment_group:
-            _, N = arr.shape
-            self.experiment_group.create_array(name, shape=(0, N), dtype=arr.dtype)
+            # _, N = arr.shape
+            my_arr = self.experiment_group.create_array(name, shape=arr.shape, dtype=arr.dtype)
 
+            my_arr[:] = arr
+            return
         zarr_array: zarr.Array = self.experiment_group[name]
         zarr_array.append(arr)
 

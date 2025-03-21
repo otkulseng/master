@@ -1,19 +1,24 @@
+import matplotlib.pyplot as plt
 import storage
 
 from scipy.interpolate import RegularGridInterpolator
 import numpy as np
 
 
-store = storage.load("neel")
+# store = storage.load("main_test")
+# experiment = store.get("d77dab54d19d441da3f54bce6f91d37f")
+store = storage.load("other40")
+experiment = store.get("2d00580853904edea4bac7d20390d5cf")
 
 
-experiment = store.get("19923205a9a64f5b99eee307501ba818")
 energy = experiment["condensation_energy"][:]
 tolerance = experiment["tol"][: energy.shape[0]]
 gap = experiment["order_params"][: energy.shape[0]]
 
 tolerance = np.linalg.norm(tolerance, axis=-1)
 gap = np.real(np.mean(gap, axis=-1))
+
+gap = np.where(tolerance > 1e-10, 0, gap)
 # tolerance = np.mean(tolerance, axis=-1)
 
 import pandas as pd
@@ -22,10 +27,35 @@ df = pd.DataFrame(energy).rename(
     columns={0: "kmode", 1: "t", 2: "mu", 3: "V", 4: "m", 5: "r", 6: "F"}
 )
 
+
+
 df["tol"] = tolerance
 
-
 df['gap'] = gap
+other = df[df['F'] > 1e-10]
+# print(other)
+
+print(0.1 + 2 * np.cos(0.895354))
+df.loc[df['F'] >= 0, 'gap'] = 0
+
+F = df['F'].to_numpy()
+
+
+F[tolerance > 1e-10] = 0
+print(f'Percentage of positive: {100*np.mean(np.where(F > 1e-10, 1, 0))}')
+
+
+print(f'Max positive: {np.max(F)}')
+
+plt.figure()
+
+
+N = 100
+
+kmodes = np.pi * (2 * np.arange(100) + 1) / (2 * 100)
+
+plt.hist(2 * np.cos(df['kmode']), density=True)
+plt.savefig('newimg2/unique.pdf')
 
 df["F"] = df["F"].clip(
     upper=0
@@ -42,7 +72,6 @@ groups = df.groupby(by=["mu", "V", "m", "r"])
 print(len(groups))
 # assert(False)
 
-import matplotlib.pyplot as plt
 
 for elem in groups:
     fig, (ax, axGap, axTol) = plt.subplots(ncols=3, figsize=(15, 5))
@@ -64,19 +93,22 @@ for elem in groups:
     F = Y["F"].to_numpy()
     T = Y["t"].to_numpy()
 
-    axTol.scatter(T, np.log10(Y["tol"].to_numpy()))
-    axGap.scatter(T, Y["gap"].to_numpy())
+    axTol.plot(T, np.log10(Y["tol"].to_numpy()), marker='+')
+
+    y = Y["gap"].to_numpy()
+    axGap.scatter(T, y, marker='+')
+    axGap.plot(T, y, color='k')
     # print(Y)
     # assert(False)
 
     meanval = np.mean(np.abs(F))
 
-    mask = np.abs(F) < 10 * meanval
-    ax.scatter(T[mask], F[mask])
+    mask = np.abs(F) < 10000000
+    ax.plot(T[mask], F[mask], marker='+')
 
     name = str(X)
     fig.suptitle(f'mu={round(mu, 2)} V={round(V, 2)} m={round(m, 2)} r={r}')
-    fig.savefig("img/" + name + ".pdf")
+    fig.savefig("newimg2/" + name + ".pdf")
     plt.close()
 # print(df)
 
