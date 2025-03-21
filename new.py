@@ -244,7 +244,7 @@ def cartesian_product(*arrays):
 
 
 # @jax.jit
-def order_parameters(lat: CubicLattice, r, k, t, mu, V, m):
+def order_parameters(lat: CubicLattice, r, V, m, t, diag):
     """_summary_
 
     Args:
@@ -265,7 +265,6 @@ def order_parameters(lat: CubicLattice, r, k, t, mu, V, m):
     sigma0 = jnp.array([[1, 0], [0, 1]], dtype=jnp.complex128)
     sigmax = jnp.array([[0, 1], [1, 0]], dtype=jnp.complex128)
 
-
     site_indices = lattice_index(lat, sites)
     delta_indices = lattice_index(lat, delta_sites)
     bonds_l_indices = lattice_index(lat, bonds[:, 0, :])
@@ -274,10 +273,13 @@ def order_parameters(lat: CubicLattice, r, k, t, mu, V, m):
     top_layer_sites = lattice_index(lat, sites[sites[:, 1] == 2])
     bottom_layer_sites = lattice_index(lat, sites[sites[:, 1] == 0])
 
+    r_sites = lattice_index(
+        lat, sites[jnp.logical_and(sites[:, 1] == 0, sites[:, 0] < r)]
+    )
 
-    r_sites = lattice_index(lat, sites[jnp.logical_and(sites[:, 1] == 0, sites[:, 0] < r)])
+
     # @jax.jit
-    def matrix(x, k0, mu0, m0):
+    def matrix(x, d0, m0):
         # Create empty matrix (zeros) of the correct size
         matr = empty_matrix(lat)
 
@@ -288,25 +290,23 @@ def order_parameters(lat: CubicLattice, r, k, t, mu, V, m):
 
         # Add top layer magnetic field
         matr = bdg_add_H(
-            matr, top_layer_sites, top_layer_sites , -m0 * sigmax[None, ...]
+            matr, top_layer_sites, top_layer_sites, -m0 * sigmax[None, ...]
         )
 
         # Add bottom layer magnetic field
         matr = bdg_add_H(
-            matr, bottom_layer_sites, bottom_layer_sites , +m0 * sigmax[None, ...]
+            matr, bottom_layer_sites, bottom_layer_sites, +m0 * sigmax[None, ...]
         )
 
         # Add r-dependence
-        matr = bdg_add_H(
-            matr, r_sites, r_sites , -2*m0 * sigmax[None, ...]
-        )
+        matr = bdg_add_H(matr, r_sites, r_sites, -2 * m0 * sigmax[None, ...])
 
         # Add k-val and mu
         matr = bdg_add_H(
             matr,
             site_indices,
             site_indices,
-            -(mu0 + 2 * jnp.cos(k0)) * sigma0[None, ...],
+            -d0 * sigma0[None, ...],
         )
 
         # Insert deltas
@@ -315,8 +315,8 @@ def order_parameters(lat: CubicLattice, r, k, t, mu, V, m):
         # Diagonalize
         return matr
 
-    def free_energy(x, k0, t0, mu0, V0, m0):
-        L = jnp.linalg.eigvalsh(matrix(x,  k0, mu0, m0))
+    def free_energy(x, V0, m0, t0, d0):
+        L = jnp.linalg.eigvalsh(matrix(x, d0, m0))
 
         # Keep only positive
         L = L[L.shape[0] // 2 :]
@@ -332,13 +332,14 @@ def order_parameters(lat: CubicLattice, r, k, t, mu, V, m):
 
         return jnp.real(E0 + H0 - t0 * S)
 
-    def condensation_energy(x, k0, t0, mu0, V0, m0):
-        return free_energy(x, k0, t0, mu0, V0, m0) - free_energy(
-            jnp.zeros_like(x), k0, t0, mu0, V0, m0
+    def condensation_energy(x, V0, m0, t0, d0):
+        return free_energy(x, V0, m0, t0, d0) - free_energy(
+            jnp.zeros_like(x), V0, m0, t0, d0
         )
 
-    def iteration_step(x, k0, t0, mu0, V0, m0):
-        L, Q = jnp.linalg.eigh(matrix(x, k0, mu0, m0))
+    # def iteration_step(x, d0, t0, V0, m0):
+    def iteration_step(x, V0, m0, t0, d0):
+        L, Q = jnp.linalg.eigh(matrix(x, d0, m0))
 
         V0 = jnp.array([V0])
         xnext = consistency(L, Q, delta_indices, V0, t0)
@@ -349,7 +350,6 @@ def order_parameters(lat: CubicLattice, r, k, t, mu, V, m):
     vmap_iteration_step = jax.jit(jax.vmap(iteration_step))
 
     vmap_condensation_energy = jax.jit(jax.vmap(condensation_energy))
-
 
     def solve(tuples: jax.Array):
         x0 = jnp.ones((tuples.shape[0], delta_sites.shape[0]), dtype=jnp.complex128)
@@ -368,10 +368,12 @@ def order_parameters(lat: CubicLattice, r, k, t, mu, V, m):
 
         print("Calculating condensation energy")
         cond_energy = vmap_condensation_energy(res.x, *tuples.T).reshape((B, 1))
-        combined = jnp.concatenate([tuples, jnp.ones_like(cond_energy)*r, cond_energy], axis=-1)
-        storage.store(['condensation_energy'], [combined])
+        combined = jnp.concatenate(
+            [tuples, jnp.ones_like(cond_energy) * r, cond_energy], axis=-1
+        )
+        storage.store(["condensation_energy"], [combined])
 
-    tuples = cartesian_product(k, t, mu, V, m)
+    tuples = cartesian_product(V, m, t, diag)
 
     # Only keep the tuples corresponding to this rank
     # comm = MPI.COMM_WORLD
@@ -384,7 +386,7 @@ def order_parameters(lat: CubicLattice, r, k, t, mu, V, m):
     # n_tasks = 10
     # n_cpu_per_task = 10
 
-    batch_size = 100
+    batch_size = 1000
 
     for i in tqdm(range(0, len(tuples), batch_size)):
         min_idx = i
@@ -400,9 +402,8 @@ def order_parameters(lat: CubicLattice, r, k, t, mu, V, m):
 
 
 def main():
-
     sys = CubicLattice((30, 3, 1), (True, False, False))
-    storage.init("other30")
+    storage.init("testdiag30")
 
     # 200 per cpu time, 2000 per time x 60 rekker ca 100000
 
@@ -413,23 +414,17 @@ def main():
     # which means 10 000 divided through
     # V, m and r0
     # r0 = 30 vals
-    # 
+    #
     N = 30
     for r0 in [0, 1]:
         x = order_parameters(
             sys,
-            r = r0,
-            k=jnp.pi * (2 * jnp.arange(N) + 1) / (2 * N),
-            # t=jnp.linspace(0.0, 0.05, 50),
-            t = jnp.linspace(0, 0.05, N),
-            # mu = jnp.linspace(0.0, 0.2, 4),
-            mu = jnp.array([0.1]),
-            V = jnp.array([0.8]),
-            # V=jnp.linspace(0.4, 0.8, num_temp),
-            # V = jnp.linspace(0.4, 0.8, 4),
+            r=r0,
+            V=jnp.array([0.8]),
             m=jnp.array([0.1]),
+            t=jnp.linspace(0, 0.05, 100),
+            diag=jnp.linspace(-3, 3, 1000),
         )
-
 
     # print(f"Number of iterations: {aux.iterations}")
     # matr = x.reshape((N, num_temp, -1)).mean(0)
