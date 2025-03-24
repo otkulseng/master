@@ -2,15 +2,16 @@ import matplotlib.pyplot as plt
 import storage
 
 import pandas as pd
+from matplotlib.colors import TwoSlopeNorm
 
-from scipy.interpolate import NearestNDInterpolator, CloughTocher2DInterpolator, CubicSpline, griddata
+from scipy.interpolate import NearestNDInterpolator, CloughTocher2DInterpolator, CubicSpline, griddata, LinearNDInterpolator
 import numpy as np
-
+from matplotlib import colors
 
 # store = storage.load("main_test")
 # experiment = store.get("d77dab54d19d441da3f54bce6f91d37f")
 store = storage.load("testdiag30")
-experiment = store.get("9e6d7768caa24f6b819119377709a300")
+experiment = store.get("4d033f16b74e42f29df3137e1a937294")
 
 
 energy = experiment["condensation_energy"][:]
@@ -37,22 +38,247 @@ df = pd.DataFrame(energy).rename(
 df['gap'] = gap
 
 
+# Step 0: Contour of F vs T and mu for multiple r
+num_r = len(np.unique(df['r']))
+fig, ax = plt.subplots(ncols=num_r, sharey=True, gridspec_kw={'wspace': 0, 'width_ratios': [1, 1]})
+
+N = 500
+mu = np.linspace(0, 1.0, N//2)
+kvals = 2 * np.cos((2 * np.arange(N) + 1 / (2 * N)))
+
+
+
+for r, inner_df in df[['T', 'diag','r','F']].groupby('r'):
+    data = np.zeros((mu.size, len(np.unique(inner_df['T']))))
+
+    T = inner_df['T'].to_numpy()
+    diag = inner_df['diag'].to_numpy()
+    F = inner_df['F'].to_numpy()
+
+
+    unique_T = np.unique(T)
+    unique_diag = np.unique(diag)
+
+    print(unique_diag.shape)
+
+    interp = LinearNDInterpolator(np.array([T, diag]).T, F, fill_value=0.0)
+
+    for idx, muval in enumerate(mu):
+        X, Y = np.meshgrid(unique_T, muval + kvals)
+        data[idx, :] = np.mean(interp((X, Y)), axis=0)
+
+    x_axis = mu
+    y_axis = unique_T
+
+    XX, YY = np.meshgrid(x_axis, y_axis, indexing='ij')
+    ZZ = data
+
+    # plt.figure(figsize=(8, 6))
+
+    # print(XX.shape, YY.shape, ZZ.shape)
+
+    norm = TwoSlopeNorm(vmin=data.min(), vcenter=0, vmax=data.max())
+
+    im = ax[int(r)].pcolormesh(XX, YY, ZZ, cmap='bwr', norm=norm, shading='gouraud')
+    # im = ax[int(r)].pcolormesh(X, Y, Z, shading='gouraud')
+    ax[int(r)].set_title(f'{int(r)}')
+
+    # plt.pcolormesh(X, Y, Z, shading='gouraud')    # smoother with more levels
+    # plt.xlabel('Diagonal value')
+    # plt.ylabel('Temperature')
+    # plt.title()
+    # plt.savefig(f"showplot/DiagvsF{r}.pdf")
+ax[0].set_ylabel('Temperature[t]')
+fig.supxlabel('Mu')
+cbar = fig.colorbar(im, label='Condensation Energy')
+# cbar.set_label('Common scale')
+plt.tight_layout()
+
+fig.savefig('showplot/FofTvsMu.pdf')
+# assert(False)
+# Step 1: Contour of F vs T and diag for multiple r
+num_r = len(np.unique(df['r']))
+fig, ax = plt.subplots(ncols=num_r, sharey=True, gridspec_kw={'wspace': 0})
+for r, inner_df in df[['T', 'diag','r','F']].groupby('r'):
+    T = inner_df['T'].to_numpy()
+    diag = inner_df['diag'].to_numpy()
+    F = inner_df['F'].to_numpy()
+
+    xi = np.linspace(diag.min(), diag.max(), 100)
+    yi = np.linspace(T.min(), T.max(), 100)
+    X, Y = np.meshgrid(xi, yi)
+    Z = griddata(
+        points=(diag, T),
+        values=F,
+        xi=(X, Y),
+        method='linear'
+    )
+
+    # plt.figure(figsize=(8, 6))
+
+    norm = TwoSlopeNorm(vmin=F.min(), vcenter=0, vmax=F.max())
+
+    im = ax[int(r)].pcolormesh(X, Y, Z, cmap='bwr', norm=norm, shading='gouraud')
+    # im = ax[int(r)].pcolormesh(X, Y, Z, shading='gouraud')
+    ax[int(r)].set_title(f'{int(r)}')
+
+    # plt.pcolormesh(X, Y, Z, shading='gouraud')    # smoother with more levels
+    # plt.xlabel('Diagonal value')
+    # plt.ylabel('Temperature')
+    # plt.title()
+    # plt.savefig(f"showplot/DiagvsF{r}.pdf")
+ax[0].set_ylabel('Temperature[t]')
+fig.supxlabel('Diagonal Value')
+cbar = fig.colorbar(im, label='Condensation Energy')
+# cbar.set_label('Common scale')
+plt.tight_layout()
+
+fig.savefig('showplot/FofTvsD.pdf')
+
+# Step 2: Non-symmetric
+num_r = len(np.unique(df['r']))
+fig, ax = plt.subplots(ncols=num_r, sharey=True, gridspec_kw={'wspace': 0})
+for r, inner_df in df[['T', 'diag','r','F']].groupby('r'):
+    T = inner_df['T'].to_numpy()
+    diag = inner_df['diag'].to_numpy()
+    F = inner_df['F'].to_numpy()
+
+    xi = np.unique(diag)
+    xi = xi[xi > 1.1]
+
+    yi = np.unique(T)
+
+    print(xi.size, yi.size)
+    # xi = np.linspace(1.0, diag.max(), 100)
+    # yi = np.linspace(T.min(), T.max(), 100)
+    X, Y = np.meshgrid(xi, yi)
+    Z = griddata(
+        points=(diag, T),
+        values=F,
+        xi=(X, Y),
+        method='linear'
+    )
+
+    # plt.figure(figsize=(8, 6))
+    norm = TwoSlopeNorm(vmin=F.min(), vcenter=0, vmax=F.max())
+
+    im = ax[int(r)].pcolormesh(X, Y, Z, cmap='bwr', norm=norm, shading='gouraud')
+    ax[int(r)].set_title(f'{int(r)}')
+
+    # plt.pcolormesh(X, Y, Z, shading='gouraud')    # smoother with more levels
+    # plt.xlabel('Diagonal value')
+    # plt.ylabel('Temperature')
+    # plt.title()
+    # plt.savefig(f"showplot/DiagvsF{r}.pdf")
+ax[0].set_ylabel('Temperature[t]')
+fig.supxlabel('Diagonal Value')
+cbar = fig.colorbar(im, label='Condensation Energy')
+# cbar.set_label('Common scale')
+plt.tight_layout()
+
+fig.savefig('showplot/FofTvsDCropped.pdf')
+
+plt.close('all')
+# Step 3: Rotated
+
+
+
+fig, ax = plt.subplots(ncols=num_r, sharey=True, gridspec_kw={'wspace': 0})
+for r, inner_df in df[['T', 'diag','r','F']].groupby('r'):
+    T = inner_df['T'].to_numpy()
+    diag = inner_df['diag'].to_numpy()
+    F = inner_df['F'].to_numpy()
+
+    xi = np.unique(T)
+    yi = np.unique(diag)
+    yi = yi[yi > 1.1]
+
+    norm = TwoSlopeNorm(vmin=F.min(), vcenter=0, vmax=F.max())
+
+
+    print(xi.size, yi.size)
+
+    # xi = np.linspace(1.0, diag.max(), 100)
+    # yi = np.linspace(T.min(), T.max(), 100)
+    X, Y = np.meshgrid(xi, yi)
+    Z = griddata(
+        points=(T, diag),
+        values=F,
+        xi=(X, Y),
+        method='linear'
+    )
+
+    # plt.figure(figsize=(8, 6))
+
+    im = ax[int(r)].pcolormesh(X, Y, Z,cmap='bwr', norm=norm, shading='gouraud')
+
+
+    # plt.pcolormesh(X, Y, Z, shading='gouraud')    # smoother with more levels
+    # plt.xlabel('Diagonal value')
+    ax[int(r)].set_title(f'{int(r)}')
+    # plt.ylabel('Temperature')
+    # plt.title()
+    # plt.savefig(f"showplot/DiagvsF{r}.pdf")
+ax[0].set_ylabel('Diagonal Value')
+
+ax[0].invert_xaxis()
+
+fig.supxlabel('Temperature[t]')
+cbar = fig.colorbar(im, label='Condensation Energy')
+# cbar.set_label('Common scale')
+plt.tight_layout()
+# fig.suptitle('Condensation energy afo T and D')
+fig.savefig('showplot/FofTvsDSwapped.pdf')
+# Step 4: Curve
+
+
+
+temps = [0.0, 0.002, 0.003]
+
+fig, axes = plt.subplots(ncols=num_r, nrows=len(temps), sharey='row', sharex='col',  gridspec_kw={'wspace': 0, 'hspace':0})
+for idx, T in enumerate(temps):
+
+    ax = axes[idx]
+    for r, inner_df in df[['T', 'diag','r','F']].groupby('r'):
+
+        print(np.abs(inner_df['T'] - T).min())
+        inner_df = inner_df[np.abs(inner_df['T'] - T) < 5e-5]
+        inner_df = inner_df[inner_df['diag'] >= 1.1]
+        diag = inner_df['diag'].to_numpy()
+        F = inner_df['F'].to_numpy()
+        ax[int(r)].plot(diag, F)
+
+    ax[1].set_ylabel(f'T={T}')
+    ax[1].yaxis.set_label_position("right")
+
+axes[0][0].set_title('0')
+axes[0][1].set_title('1')
+
+
+fig.supylabel('Condensation Energy [t]')
+fig.supxlabel('Diagonal Value')
+# cbar.set_label('Common scale')
+# fig.suptitle('Condensation energy afo T and D')
+fig.savefig('showplot/FofTvsDSwcurve.pdf')
+assert(False)
+
 new_df = df[['T', 'diag', 'r', 'F']]
 
 print(len(np.unique(new_df['T'])))
 
 for T, outer in new_df.groupby(by='T'):
 
-    if np.max(outer['F']) < 1e-5:
-        continue
+    # if np.max(np.abs(outer['F'])) < 1e-5:
+    #     continue
     plt.figure()
-    fig, ax = plt.subplots(ncols=2)
+    fig, ax = plt.subplots(ncols=2, figsize=(20, 10), sharey=True)
     for num, frame in outer.groupby(by='r'):
-        ax[int(num)].plot(frame['diag'], frame['F'], label=num)
-    plt.legend()
+        ax[int(num)].plot(frame['diag'], frame['F'])
+        ax[int(num)].set_title(f'{num}')
+
     fig.suptitle(f'T={T}')
     fig.savefig(f'diagplots/T={T}.pdf')
-    plt.close()
+    plt.close('all')
 
 assert(False)
 

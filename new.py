@@ -386,7 +386,7 @@ def order_parameters(lat: CubicLattice, r, V, m, t, diag):
     # n_tasks = 10
     # n_cpu_per_task = 10
 
-    batch_size = 1000
+    batch_size = 500
 
     for i in tqdm(range(0, len(tuples), batch_size)):
         min_idx = i
@@ -415,15 +415,21 @@ def main():
     # V, m and r0
     # r0 = 30 vals
     #
-    N = 30
+    N = 500
+
+    diag_vals = jnp.concatenate([
+        jnp.linspace(-1.5, -1.0, N), jnp.linspace(1.0, 1.5, N)
+    ])
+
+
     for r0 in [0, 1]:
         x = order_parameters(
             sys,
             r=r0,
             V=jnp.array([0.8]),
             m=jnp.array([0.1]),
-            t=jnp.linspace(0, 0.05, 100),
-            diag=jnp.linspace(-3, 3, 1000),
+            t=jnp.linspace(0, 0.01, 100),
+            diag=diag_vals,
         )
 
     # print(f"Number of iterations: {aux.iterations}")
